@@ -1,15 +1,18 @@
 import { useState } from 'react'
 import './App.css'
 
+type Member = 'me' | 'wife'
+
 type Event = {
   id: number
   title: string
   date: string
-  member: 'me' | 'wife'
+  member: Member
 }
 
 function App() {
   const [currentDate, setCurrentDate] = useState(new Date())
+
   const [events, setEvents] = useState<Event[]>([
     {
       id: 1,
@@ -25,13 +28,18 @@ function App() {
     },
   ])
 
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [selectedDate, setSelectedDate] = useState('')
+  const [newTitle, setNewTitle] = useState('')
+  const [newMember, setNewMember] = useState<Member>('me')
+
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
 
   const firstDay = new Date(year, month, 1).getDay()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
 
-  const days = []
+  const days: (number | null)[] = []
 
   for (let i = 0; i < firstDay; i++) {
     days.push(null)
@@ -62,19 +70,31 @@ function App() {
     return events.filter((event) => event.date === date)
   }
 
-  const addEvent = (day: number) => {
-    const title = window.prompt('予定を入力してください')
+  const openAddModal = (day: number) => {
+    setSelectedDate(getDateString(day))
+    setNewTitle('')
+    setNewMember('me')
+    setIsModalOpen(true)
+  }
 
-    if (!title) return
+  const closeModal = () => {
+    setIsModalOpen(false)
+  }
+
+  const addEvent = () => {
+    if (!newTitle.trim()) {
+      return
+    }
 
     const newEvent: Event = {
       id: Date.now(),
-      title,
-      date: getDateString(day),
-      member: 'me',
+      title: newTitle.trim(),
+      date: selectedDate,
+      member: newMember,
     }
 
-    setEvents([...events, newEvent])
+    setEvents((currentEvents) => [...currentEvents, newEvent])
+    setIsModalOpen(false)
   }
 
   return (
@@ -129,7 +149,7 @@ function App() {
               <div
                 className="day"
                 key={day}
-                onDoubleClick={() => addEvent(day)}
+                onDoubleClick={() => openAddModal(day)}
               >
                 <span className="day-number">{day}</span>
 
@@ -164,6 +184,77 @@ function App() {
           カレンダーの日付をダブルクリックすると予定を追加できます。
         </p>
       </main>
+
+      {isModalOpen && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div
+            className="modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>予定を追加</h2>
+
+            <div className="form-group">
+              <label htmlFor="event-title">予定</label>
+              <input
+                id="event-title"
+                type="text"
+                value={newTitle}
+                onChange={(event) => setNewTitle(event.target.value)}
+                placeholder="例：映画、買い物、病院..."
+                autoFocus
+              />
+            </div>
+
+            <div className="form-group">
+              <label>誰の予定？</label>
+
+              <div className="member-select">
+                <button
+                  type="button"
+                  className={newMember === 'me' ? 'selected me' : ''}
+                  onClick={() => setNewMember('me')}
+                >
+                  自分
+                </button>
+
+                <button
+                  type="button"
+                  className={newMember === 'wife' ? 'selected wife' : ''}
+                  onClick={() => setNewMember('wife')}
+                >
+                  妻
+                </button>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>日付</label>
+              <div className="selected-date">
+                {selectedDate.replace(/-/g, '/')}
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="cancel-button"
+                onClick={closeModal}
+              >
+                キャンセル
+              </button>
+
+              <button
+                type="button"
+                className="add-button"
+                onClick={addEvent}
+                disabled={!newTitle.trim()}
+              >
+                追加
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
