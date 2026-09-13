@@ -29,9 +29,11 @@ function App() {
   ])
 
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [editingEventId, setEditingEventId] = useState<number | null>(null)
+
   const [selectedDate, setSelectedDate] = useState('')
-  const [newTitle, setNewTitle] = useState('')
-  const [newMember, setNewMember] = useState<Member>('me')
+  const [eventTitle, setEventTitle] = useState('')
+  const [eventMember, setEventMember] = useState<Member>('me')
 
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
@@ -70,32 +72,86 @@ function App() {
     return events.filter((event) => event.date === date)
   }
 
+  // 新しい予定を追加する
   const openAddModal = (day: number) => {
+    setEditingEventId(null)
     setSelectedDate(getDateString(day))
-    setNewTitle('')
-    setNewMember('me')
+    setEventTitle('')
+    setEventMember('me')
+    setIsModalOpen(true)
+  }
+
+  // 既存の予定を編集する
+  const openEditModal = (event: Event) => {
+    setEditingEventId(event.id)
+    setSelectedDate(event.date)
+    setEventTitle(event.title)
+    setEventMember(event.member)
     setIsModalOpen(true)
   }
 
   const closeModal = () => {
     setIsModalOpen(false)
+    setEditingEventId(null)
   }
 
-  const addEvent = () => {
-    if (!newTitle.trim()) {
+  // 予定を追加または更新する
+  const saveEvent = () => {
+    if (!eventTitle.trim()) {
       return
     }
 
-    const newEvent: Event = {
-      id: Date.now(),
-      title: newTitle.trim(),
-      date: selectedDate,
-      member: newMember,
+    if (editingEventId !== null) {
+      // 編集の場合
+      setEvents((currentEvents) =>
+        currentEvents.map((event) =>
+          event.id === editingEventId
+            ? {
+                ...event,
+                title: eventTitle.trim(),
+                date: selectedDate,
+                member: eventMember,
+              }
+            : event,
+        ),
+      )
+    } else {
+      // 新規追加の場合
+      const newEvent: Event = {
+        id: Date.now(),
+        title: eventTitle.trim(),
+        date: selectedDate,
+        member: eventMember,
+      }
+
+      setEvents((currentEvents) => [...currentEvents, newEvent])
     }
 
-    setEvents((currentEvents) => [...currentEvents, newEvent])
-    setIsModalOpen(false)
+    closeModal()
   }
+
+  // 予定を削除する
+  const deleteEvent = () => {
+    if (editingEventId === null) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      'この予定を削除してもよろしいですか？',
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setEvents((currentEvents) =>
+      currentEvents.filter((event) => event.id !== editingEventId),
+    )
+
+    closeModal()
+  }
+
+  const isEditing = editingEventId !== null
 
   return (
     <div className="app">
@@ -158,6 +214,14 @@ function App() {
                     <div
                       className={`event ${event.member}`}
                       key={event.id}
+                      onClick={(clickEvent) => {
+                        clickEvent.stopPropagation()
+                        openEditModal(event)
+                      }}
+                      onDoubleClick={(doubleClickEvent) => {
+                        doubleClickEvent.stopPropagation()
+                        openEditModal(event)
+                      }}
                     >
                       {event.title}
                     </div>
@@ -181,7 +245,8 @@ function App() {
         </div>
 
         <p className="help-text">
-          カレンダーの日付をダブルクリックすると予定を追加できます。
+          日付をダブルクリックすると予定を追加できます。
+          予定をクリックすると編集できます。
         </p>
       </main>
 
@@ -191,15 +256,16 @@ function App() {
             className="modal"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2>予定を追加</h2>
+            <h2>{isEditing ? '予定を編集' : '予定を追加'}</h2>
 
             <div className="form-group">
               <label htmlFor="event-title">予定</label>
+
               <input
                 id="event-title"
                 type="text"
-                value={newTitle}
-                onChange={(event) => setNewTitle(event.target.value)}
+                value={eventTitle}
+                onChange={(event) => setEventTitle(event.target.value)}
                 placeholder="例：映画、買い物、病院..."
                 autoFocus
               />
@@ -211,16 +277,16 @@ function App() {
               <div className="member-select">
                 <button
                   type="button"
-                  className={newMember === 'me' ? 'selected me' : ''}
-                  onClick={() => setNewMember('me')}
+                  className={eventMember === 'me' ? 'selected me' : ''}
+                  onClick={() => setEventMember('me')}
                 >
                   自分
                 </button>
 
                 <button
                   type="button"
-                  className={newMember === 'wife' ? 'selected wife' : ''}
-                  onClick={() => setNewMember('wife')}
+                  className={eventMember === 'wife' ? 'selected wife' : ''}
+                  onClick={() => setEventMember('wife')}
                 >
                   妻
                 </button>
@@ -228,29 +294,45 @@ function App() {
             </div>
 
             <div className="form-group">
-              <label>日付</label>
-              <div className="selected-date">
-                {selectedDate.replace(/-/g, '/')}
-              </div>
+              <label htmlFor="event-date">日付</label>
+
+              <input
+                id="event-date"
+                type="date"
+                value={selectedDate}
+                onChange={(event) => setSelectedDate(event.target.value)}
+              />
             </div>
 
             <div className="modal-actions">
-              <button
-                type="button"
-                className="cancel-button"
-                onClick={closeModal}
-              >
-                キャンセル
-              </button>
+              {isEditing && (
+                <button
+                  type="button"
+                  className="delete-button"
+                  onClick={deleteEvent}
+                >
+                  削除
+                </button>
+              )}
 
-              <button
-                type="button"
-                className="add-button"
-                onClick={addEvent}
-                disabled={!newTitle.trim()}
-              >
-                追加
-              </button>
+              <div className="modal-actions-right">
+                <button
+                  type="button"
+                  className="cancel-button"
+                  onClick={closeModal}
+                >
+                  キャンセル
+                </button>
+
+                <button
+                  type="button"
+                  className="add-button"
+                  onClick={saveEvent}
+                  disabled={!eventTitle.trim() || !selectedDate}
+                >
+                  {isEditing ? '保存' : '追加'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
