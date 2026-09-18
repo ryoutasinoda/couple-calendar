@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 
 type Member = 'me' | 'wife'
@@ -13,20 +13,37 @@ type Event = {
 function App() {
   const [currentDate, setCurrentDate] = useState(new Date())
 
-  const [events, setEvents] = useState<Event[]>([
+const STORAGE_KEY = 'couple-calendar-events'
+
+const [events, setEvents] = useState<Event[]>(() => {
+  const savedEvents = localStorage.getItem(STORAGE_KEY)
+
+  if (savedEvents) {
+    try {
+      return JSON.parse(savedEvents) as Event[]
+    } catch {
+      console.error('予定データの読み込みに失敗しました')
+    }
+  }
+
+  return [
     {
       id: 1,
       title: 'デート',
       date: '2026-09-14',
-      member: 'me',
+      member: 'me' as Member,
     },
     {
       id: 2,
       title: '病院',
       date: '2026-09-17',
-      member: 'wife',
+      member: 'wife' as Member,
     },
-  ])
+  ]
+})
+useEffect(() => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(events))
+}, [events])
 
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState<number | null>(null)
