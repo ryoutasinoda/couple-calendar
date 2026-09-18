@@ -243,6 +243,8 @@ button {
 .modal {
   width: 100%;
   max-width: 420px;
+  max-height: 90vh;
+  overflow-y: auto;
   padding: 28px;
   background: white;
   border-radius: 16px;
@@ -265,16 +267,20 @@ button {
   font-weight: 600;
 }
 
-.form-group input {
+.form-group input:not([type="checkbox"]),
+.form-group textarea {
   width: 100%;
   padding: 11px 12px;
   border: 1px solid #d8d8d8;
   border-radius: 8px;
   outline: none;
   font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
 }
 
-.form-group input:focus {
+.form-group input:not([type="checkbox"]):focus,
+.form-group textarea:focus {
   border-color: #777;
 }
 
@@ -384,4 +390,33 @@ button {
 
 .delete-button:hover {
   background: #fff2f2;
+}
+.form-group label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.form-group input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+}
+.day.today {
+  background: #f0f6ff;
+  box-shadow: inset 0 0 0 2px #8aafe8;
+}
+
+.day.today .day-number {
+  color: #3562a8;
+  font-weight: 700;
+}
+.day-number.sunday {
+  color: #d66b7b;
+}
+
+.day-number.saturday {
+  color: #668dcc;
 }

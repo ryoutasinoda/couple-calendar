@@ -99,7 +99,13 @@ useEffect(() => {
   const getDateString = (day: number) => {
     return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
   }
-
+  const getTodayString = () => {
+    const today = new Date()
+    return `${today.getFullYear()}-${String(
+      today.getMonth() + 1,
+    ).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  }
+  
   const getEvents = (day: number) => {
     const date = getDateString(day)
     return events.filter((event) => event.date === date)
@@ -252,11 +258,26 @@ useEffect(() => {
 
             return (
               <div
-                className="day"
+                className={`day ${
+                  getDateString(day) ===
+                  getTodayString()
+                    ? 'today'
+                    : ''
+                }`}
                 key={day}
                 onDoubleClick={() => openAddModal(day)}
               >
-                <span className="day-number">{day}</span>
+                <span
+                  className={`day-number ${
+                    new Date(year, month, day).getDay() === 0
+                      ? 'sunday'
+                      : new Date(year, month, day).getDay() === 6
+                        ? 'saturday'
+                        : ''
+                  }`}
+                >
+                  {day}
+                </span>
 
                 <div className="events">
                   {dayEvents.map((event) => (
