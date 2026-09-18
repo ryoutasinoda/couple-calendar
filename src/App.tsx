@@ -8,6 +8,10 @@ type Event = {
   title: string
   date: string
   member: Member
+  isAllDay: boolean
+  startTime: string
+  endTime: string
+  memo: string
 }
 
 function App() {
@@ -32,12 +36,20 @@ const [events, setEvents] = useState<Event[]>(() => {
       title: 'デート',
       date: '2026-09-14',
       member: 'me' as Member,
+      isAllDay: true,
+      startTime: '',
+      endTime: '',
+      memo: '',
     },
     {
       id: 2,
       title: '病院',
       date: '2026-09-17',
       member: 'wife' as Member,
+      isAllDay: true,
+      startTime: '',
+      endTime: '',
+      memo: '',
     },
   ]
 })
@@ -51,6 +63,10 @@ useEffect(() => {
   const [selectedDate, setSelectedDate] = useState('')
   const [eventTitle, setEventTitle] = useState('')
   const [eventMember, setEventMember] = useState<Member>('me')
+  const [isAllDay, setIsAllDay] = useState(true)
+  const [startTime, setStartTime] = useState('')
+  const [endTime, setEndTime] = useState('')
+  const [eventMemo, setEventMemo] = useState('')
 
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
@@ -95,6 +111,10 @@ useEffect(() => {
     setSelectedDate(getDateString(day))
     setEventTitle('')
     setEventMember('me')
+    setIsAllDay(true)
+    setStartTime('')
+    setEndTime('')
+    setEventMemo('')
     setIsModalOpen(true)
   }
 
@@ -104,6 +124,10 @@ useEffect(() => {
     setSelectedDate(event.date)
     setEventTitle(event.title)
     setEventMember(event.member)
+    setIsAllDay(event.isAllDay)
+    setStartTime(event.startTime)
+    setEndTime(event.endTime)
+    setEventMemo(event.memo)
     setIsModalOpen(true)
   }
 
@@ -128,6 +152,10 @@ useEffect(() => {
                 title: eventTitle.trim(),
                 date: selectedDate,
                 member: eventMember,
+                isAllDay,
+                startTime,
+                endTime,
+                memo: eventMemo,
               }
             : event,
         ),
@@ -139,6 +167,10 @@ useEffect(() => {
         title: eventTitle.trim(),
         date: selectedDate,
         member: eventMember,
+        isAllDay,
+        startTime,
+        endTime,
+        memo: eventMemo,
       }
 
       setEvents((currentEvents) => [...currentEvents, newEvent])
@@ -320,7 +352,49 @@ useEffect(() => {
                 onChange={(event) => setSelectedDate(event.target.value)}
               />
             </div>
+            <div className="form-group">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={isAllDay}
+                  onChange={(event) => setIsAllDay(event.target.checked)}
+                />
+                終日予定
+              </label>
+            </div>
+            {!isAllDay && (
+              <>
+                <div className="form-group">
+                  <label htmlFor="start-time">開始時間</label>
+                  <input
+                    id="start-time"
+                    type="time"
+                    value={startTime}
+                    onChange={(event) => setStartTime(event.target.value)}
+                  />
+                </div>
 
+                <div className="form-group">
+                  <label htmlFor="end-time">終了時間</label>
+                  <input
+                    id="end-time"
+                    type="time"
+                    value={endTime}
+                    onChange={(event) => setEndTime(event.target.value)}
+                  />
+                </div>
+              </>
+            )}
+            <div className="form-group">
+              <label htmlFor="event-memo">メモ</label>
+              <textarea
+                id="event-memo"
+                value={eventMemo}
+                onChange={(event) => setEventMemo(event.target.value)}
+                placeholder="持ち物や詳細など..."
+                rows={3}
+              />
+            </div>
             <div className="modal-actions">
               {isEditing && (
                 <button
