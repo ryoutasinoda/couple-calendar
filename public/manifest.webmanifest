@@ -1,0 +1,19 @@
+{
+  "name": "Couple Calendar",
+  "short_name": "ふたりの予定帳",
+  "description": "夫婦の予定と妊活スケジュールを管理するカレンダー",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f7f8",
+  "theme_color": "#f4dce6",
+  "lang": "ja",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

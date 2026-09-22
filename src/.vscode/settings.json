@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd \"c:\\\\Users\\\\81806\\\\Documents\\\\programs\\\\couple-calendar\"; npm\\.cmd run lint$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
