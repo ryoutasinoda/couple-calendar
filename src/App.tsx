@@ -1,7 +1,32 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import AuthPanel from './AuthPanel'
-import { createEvent as createApiEvent, deleteEvent as deleteApiEvent, getCurrentUser, getEvents as getApiEvents, logout, regenerateInviteCode, updateEvent as updateApiEvent, type ApiEvent, type ApiUser } from './api'
+import {
+  createCategory,
+  createEvent as createApiEvent,
+  createSelfTest,
+  deleteCategory,
+  deleteEvent as deleteApiEvent,
+  deleteSelfTest,
+  endPeriod,
+  getCategories,
+  getCurrentUser,
+  getCycles,
+  getEvents as getApiEvents,
+  getPeriods,
+  getSelfTests,
+  logout,
+  regenerateInviteCode,
+  startPeriod,
+  updateCycle,
+  updateEvent as updateApiEvent,
+  type ApiCategory,
+  type ApiCycle,
+  type ApiEvent,
+  type ApiPeriodRecord,
+  type ApiSelfTest,
+  type ApiUser,
+} from './api'
 
 type Member = 'me' | 'wife' | 'both'
 type EventIcon =
@@ -28,7 +53,25 @@ type Event = {
   endTime: string
   memo: string
   icon: EventIcon
+  categoryId?: number | null
+  amount?: number | null
+  shared?: boolean
+  notifyBeforeDay?: boolean
   source?: 'local' | 'api'
+}
+
+type PeriodRecord = ApiPeriodRecord
+
+type CycleRecord = ApiCycle & {
+  event_count: number
+  self_test_count: number
+}
+
+type SelfTestRecord = ApiSelfTest
+
+type BeforeInstallPromptEvent = globalThis.Event & {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
 }
 
 const memberOptions: { value: Member; label: string }[] = [
@@ -125,6 +168,10 @@ const apiEventToLocalEvent = (event: ApiEvent): Event => ({
   endTime: event.end_time ?? '',
   memo: event.memo ?? '',
   icon: iconOptions.some((option) => option.value === event.icon) ? event.icon as EventIcon : 'calendar',
+  categoryId: event.category_id,
+  amount: event.amount,
+  shared: Boolean(event.shared),
+  notifyBeforeDay: Boolean(event.notify_before_day),
   source: 'api',
 })
 
@@ -137,6 +184,10 @@ const localEventToApiPayload = (event: Omit<Event, 'id' | 'source'>) => ({
   target: event.member === 'wife' ? 'wife' : event.member === 'both' ? 'both' : 'husband',
   icon: event.icon,
   memo: event.memo,
+  category_id: event.categoryId ?? null,
+  amount: event.amount ?? null,
+  shared: event.shared === false ? 0 : 1,
+  notify_before_day: event.notifyBeforeDay === true,
 })
 
 function App() {
@@ -158,6 +209,7 @@ function App() {
   const [modalMode, setModalMode] = useState<'create' | 'view' | 'edit'>('create')
   const [editingEventId, setEditingEventId] = useState<number | null>(null)
   const [selectedDate, setSelectedDate] = useState('')
+  const [selectedDayForList, setSelectedDayForList] = useState(() => new Date().toISOString().slice(0, 10))
   const [eventTitle, setEventTitle] = useState('')
   const [eventMember, setEventMember] = useState<Member>('me')
   const [isAllDay, setIsAllDay] = useState(true)
@@ -165,10 +217,29 @@ function App() {
   const [endTime, setEndTime] = useState('')
   const [eventMemo, setEventMemo] = useState('')
   const [eventIcon, setEventIcon] = useState<EventIcon>('calendar')
+  const [eventAmount, setEventAmount] = useState('')
+  const [eventShared, setEventShared] = useState(true)
+  const [eventNotifyBeforeDay, setEventNotifyBeforeDay] = useState(false)
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null)
+  const [categories, setCategories] = useState<ApiCategory[]>([])
+  const [categoryName, setCategoryName] = useState('')
+  const [categoryIcon, setCategoryIcon] = useState('✦')
+  const [categoryColor, setCategoryColor] = useState('#7a7ae6')
   const [formError, setFormError] = useState('')
   const [showFertilityOnly, setShowFertilityOnly] = useState(false)
   const [dataMessage, setDataMessage] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [periods, setPeriods] = useState<PeriodRecord[]>([])
+  const [cycles, setCycles] = useState<CycleRecord[]>([])
+  const [selfTests, setSelfTests] = useState<SelfTestRecord[]>([])
+  const [selfTestDate, setSelfTestDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [selfTestType, setSelfTestType] = useState<'ovulation' | 'pregnancy'>('ovulation')
+  const [selfTestResult, setSelfTestResult] = useState<'negative' | 'positive' | 'pending'>('negative')
+  const [selfTestMemo, setSelfTestMemo] = useState('')
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null)
+  const [installable, setInstallable] = useState(false)
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>('unsupported')
+  const [notificationPreference, setNotificationPreference] = useState(false)
 
   const currentEvent = editingEventId !== null ? events.find((event) => event.id === editingEventId) ?? null : null
 
@@ -182,6 +253,85 @@ function App() {
   useEffect(() => {
     if (!authUser) return
 
+    if ('Notification' in window) {
+      setNotificationPermission(Notification.permission)
+      const savedPreference = window.localStorage.getItem('couple-calendar-notify-enabled') === 'true'
+      setNotificationPreference(savedPreference || Notification.permission === 'granted')
+    } else {
+      setNotificationPermission('unsupported')
+      setNotificationPreference(false)
+    }
+
+    const handleBeforeInstallPrompt = (event: globalThis.Event) => {
+      event.preventDefault()
+      setDeferredPrompt(event as BeforeInstallPromptEvent)
+      setInstallable(true)
+    }
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    }
+  }, [authUser])
+
+  useEffect(() => {
+    if (notificationPermission === 'granted') {
+      window.localStorage.setItem('couple-calendar-notify-enabled', 'true')
+      setNotificationPreference(true)
+    } else if (notificationPermission === 'denied') {
+      window.localStorage.setItem('couple-calendar-notify-enabled', 'false')
+      setNotificationPreference(false)
+    }
+  }, [notificationPermission])
+
+  useEffect(() => {
+    if (notificationPreference) {
+      window.localStorage.setItem('couple-calendar-notify-enabled', 'true')
+    } else {
+      window.localStorage.setItem('couple-calendar-notify-enabled', 'false')
+    }
+  }, [notificationPreference])
+
+  const handleInstallPwa = async () => {
+    if (!deferredPrompt) {
+      setDataMessage('このブラウザではインストール案内が表示されません。Safari の「ホーム画面に追加」をご利用ください。')
+      return
+    }
+
+    try {
+      await deferredPrompt.prompt()
+      await deferredPrompt.userChoice
+      setDeferredPrompt(null)
+      setInstallable(false)
+      setDataMessage('PWA のインストール案内を表示しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : 'インストール案内の表示に失敗しました。')
+    }
+  }
+
+  const handleEnableNotifications = async () => {
+    if (!('Notification' in window)) {
+      setDataMessage('この端末では通知を利用できません。iOS ではホーム画面に追加後に通知設定をご確認ください。')
+      return
+    }
+
+    try {
+      const permission = await Notification.requestPermission()
+      setNotificationPermission(permission)
+      setNotificationPreference(permission === 'granted')
+      if (permission === 'granted') {
+        setDataMessage('通知を有効にしました。予定の前日通知を使えるように準備しています。')
+      } else {
+        setDataMessage('通知は後で有効にできます。通知設定はブラウザの許可設定から変更できます。')
+      }
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '通知の設定に失敗しました。')
+    }
+  }
+
+  useEffect(() => {
+    if (!authUser) return
+
     const from = `${year}-${String(month + 1).padStart(2, '0')}-01`
     const to = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
     getApiEvents(from, to)
@@ -190,6 +340,42 @@ function App() {
       })
       .catch(() => setDataMessage('Worker APIから予定を取得できませんでした。'))
   }, [authUser, year, month, daysInMonth])
+
+  useEffect(() => {
+    if (!authUser) return
+
+    const refreshCategories = async () => {
+      try {
+        const response = await getCategories()
+        setCategories(response.categories)
+      } catch (caughtError) {
+        setDataMessage(caughtError instanceof Error ? caughtError.message : 'カテゴリを取得できませんでした。')
+      }
+    }
+
+    refreshCategories().catch(() => undefined)
+  }, [authUser])
+
+  useEffect(() => {
+    if (!authUser) return
+
+    const refreshFertilityData = async () => {
+      try {
+        const [periodsResponse, cyclesResponse, selfTestsResponse] = await Promise.all([
+          getPeriods(),
+          getCycles(),
+          getSelfTests(),
+        ])
+        setPeriods(periodsResponse.periods)
+        setCycles(cyclesResponse.cycles)
+        setSelfTests(selfTestsResponse.self_tests)
+      } catch (caughtError) {
+        setDataMessage(caughtError instanceof Error ? caughtError.message : '生理・治療記録を取得できませんでした。')
+      }
+    }
+
+    refreshFertilityData().catch(() => undefined)
+  }, [authUser])
 
   const getHolidayName = (day: number) => holidayMap[getDateString(day)] ?? ''
 
@@ -218,6 +404,9 @@ function App() {
     })
 
   const getEvents = (day: number) => sortEvents(events.filter((event) => event.date === getDateString(day)))
+  const selectedDayEvents = useMemo(() => sortEvents(events.filter((event) => event.date === selectedDayForList)), [events, selectedDayForList])
+
+  const categoryMap = useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories])
 
   const isFertilityEvent = (event: Event) => fertilityIcons.includes(event.icon)
 
@@ -237,6 +426,10 @@ function App() {
     setEndTime('')
     setEventMemo('')
     setEventIcon('calendar')
+    setSelectedCategoryId(null)
+    setEventAmount('')
+    setEventShared(true)
+    setEventNotifyBeforeDay(false)
   }
 
   const loadEventToForm = (event: Event) => {
@@ -250,12 +443,26 @@ function App() {
     setEndTime(event.endTime)
     setEventMemo(event.memo)
     setEventIcon(event.icon)
+    setSelectedCategoryId(event.categoryId ?? null)
+    setEventAmount(event.amount !== null && event.amount !== undefined ? String(event.amount) : '')
+    setEventShared(event.shared ?? true)
+    setEventNotifyBeforeDay(event.notifyBeforeDay ?? false)
   }
 
   const openAddModal = (day: number) => {
     resetForm()
     setEditingEventId(null)
-    setSelectedDate(getDateString(day))
+    const nextDate = getDateString(day)
+    setSelectedDate(nextDate)
+    setSelectedDayForList(nextDate)
+    setModalMode('create')
+    setIsModalOpen(true)
+  }
+
+  const openQuickAdd = () => {
+    resetForm()
+    setEditingEventId(null)
+    setSelectedDate(selectedDayForList)
     setModalMode('create')
     setIsModalOpen(true)
   }
@@ -313,6 +520,10 @@ function App() {
       endTime: isAllDay ? '' : endTime,
       memo: eventMemo.trim(),
       icon: eventIcon,
+      categoryId: selectedCategoryId,
+      amount: eventAmount.trim() === '' ? null : Number(eventAmount),
+      shared: eventShared,
+      notifyBeforeDay: eventNotifyBeforeDay,
     }
 
     try {
@@ -350,7 +561,126 @@ function App() {
     }
   }
 
+  const latestPeriod = periods[0] ?? null
+  const activePeriod = periods.find((period) => period.end_date === null) ?? null
+  const cycleCards = [...cycles].sort((left, right) => new Date(right.start_date).getTime() - new Date(left.start_date).getTime())
+
+  const refreshCategories = async () => {
+    const response = await getCategories()
+    setCategories(response.categories)
+  }
+
+  const handleCreateCategory = async () => {
+    if (!categoryName.trim()) {
+      setDataMessage('カテゴリ名を入力してください。')
+      return
+    }
+
+    try {
+      await createCategory({ name: categoryName.trim(), icon: categoryIcon, color: categoryColor })
+      await refreshCategories()
+      setCategoryName('')
+      setCategoryIcon('✦')
+      setCategoryColor('#7a7ae6')
+      setDataMessage('カテゴリを追加しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : 'カテゴリの追加に失敗しました。')
+    }
+  }
+
+  const handleDeleteCategory = async (categoryId: number) => {
+    if (!window.confirm('このカテゴリを削除してよろしいですか？')) return
+
+    try {
+      await deleteCategory(categoryId)
+      setCategories((currentCategories) => currentCategories.filter((category) => category.id !== categoryId))
+      if (selectedCategoryId === categoryId) setSelectedCategoryId(null)
+      setDataMessage('カテゴリを削除しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : 'カテゴリの削除に失敗しました。')
+    }
+  }
+
+  const handleStartPeriod = async () => {
+    try {
+      await startPeriod(new Date().toISOString().slice(0, 10))
+      const [periodsResponse, cyclesResponse, selfTestsResponse] = await Promise.all([
+        getPeriods(),
+        getCycles(),
+        getSelfTests(),
+      ])
+      setPeriods(periodsResponse.periods)
+      setCycles(cyclesResponse.cycles)
+      setSelfTests(selfTestsResponse.self_tests)
+      setDataMessage('生理開始を記録しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '生理開始を記録できませんでした。')
+    }
+  }
+
+  const handleEndPeriod = async () => {
+    if (!activePeriod) return
+    try {
+      await endPeriod(activePeriod.id, new Date().toISOString().slice(0, 10))
+      const [periodsResponse, cyclesResponse, selfTestsResponse] = await Promise.all([
+        getPeriods(),
+        getCycles(),
+        getSelfTests(),
+      ])
+      setPeriods(periodsResponse.periods)
+      setCycles(cyclesResponse.cycles)
+      setSelfTests(selfTestsResponse.self_tests)
+      setDataMessage('生理終了を記録しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '生理終了を記録できませんでした。')
+    }
+  }
+
+  const handleCycleResult = async (cycleId: number, result: '陽性' | '陰性') => {
+    try {
+      await updateCycle(cycleId, { result })
+      const response = await getCycles()
+      setCycles(response.cycles)
+      setDataMessage(`周期の結果を${result}に更新しました。`)
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '周期結果の更新に失敗しました。')
+    }
+  }
+
+  const handleCreateSelfTest = async () => {
+    if (!selfTestDate) {
+      setDataMessage('検査日を選択してください。')
+      return
+    }
+
+    try {
+      await createSelfTest({
+        type: selfTestType,
+        result: selfTestResult,
+        tested_at: `${selfTestDate}T09:00:00`,
+        memo: selfTestMemo.trim() || undefined,
+      })
+      const response = await getSelfTests()
+      setSelfTests(response.self_tests)
+      setSelfTestMemo('')
+      setDataMessage('自己検査を記録しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '自己検査の記録に失敗しました。')
+    }
+  }
+
+  const handleDeleteSelfTest = async (id: number) => {
+    try {
+      await deleteSelfTest(id)
+      setSelfTests((currentSelfTests) => currentSelfTests.filter((selfTest) => selfTest.id !== id))
+      setDataMessage('自己検査の記録を削除しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '自己検査の削除に失敗しました。')
+    }
+  }
+
   const isEditing = modalMode === 'edit'
+  const selectedCategory = categories.find((category) => category.id === (currentEvent?.categoryId ?? selectedCategoryId)) ?? null
 
   const handleRegenerateInviteCode = async () => {
     try {
@@ -431,14 +761,18 @@ function App() {
               const dayEvents = getEvents(day)
               return (
                 <div
-                  className={`day ${date === todayString ? 'today' : ''}`}
+                  className={`day ${date === todayString ? 'today' : ''} ${date === selectedDayForList ? 'selected-day' : ''}`}
                   key={date}
-                  onClick={() => openAddModal(day)}
+                  onClick={() => {
+                    setSelectedDayForList(date)
+                    openAddModal(day)
+                  }}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault()
+                      setSelectedDayForList(date)
                       openAddModal(day)
                     }
                   }}
@@ -450,6 +784,7 @@ function App() {
                   <div className="events">
                     {dayEvents.slice(0, 3).map((event) => {
                       const icon = iconOptions.find((option) => option.value === event.icon) ?? iconOptions[0]
+                      const category = event.categoryId ? categoryMap.get(event.categoryId) ?? null : null
                       return (
                         <button
                           type="button"
@@ -460,14 +795,28 @@ function App() {
                             clickEvent.stopPropagation()
                             openViewModal(event)
                           }}
+                          style={category ? { border: `1px solid ${category.color}33`, background: category.color ? `${category.color}1A` : undefined } : undefined}
                         >
-                          <span className="event-icon">{icon.symbol}</span>
+                          <span className="event-icon">{category ? category.icon : icon.symbol}</span>
                           <span className="event-title">{event.title}</span>
                         </button>
                       )
                     })}
                     {dayEvents.length > 3 && <span className="event-overflow">+ 他{dayEvents.length - 3}件</span>}
                   </div>
+                  {dayEvents.length > 0 && (
+                    <div className="day-category-badges" aria-label={`${date}のカテゴリ`}>
+                      {dayEvents.slice(0, 3).map((event) => {
+                        const category = event.categoryId ? categoryMap.get(event.categoryId) ?? null : null
+                        if (!category) return null
+                        return (
+                          <span key={`${event.id}-badge`} className="day-category-badge" style={{ borderColor: category.color, color: category.color, background: `${category.color}18` }}>
+                            {category.icon}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -493,14 +842,15 @@ function App() {
             <div className="event-list">
               {monthEvents.map((event) => {
                 const icon = iconOptions.find((option) => option.value === event.icon) ?? iconOptions[0]
+                const category = event.categoryId ? categoryMap.get(event.categoryId) ?? null : null
                 return (
                   <button type="button" className={`event-list-item ${event.member}`} key={event.id} onClick={() => openViewModal(event)}>
-                    <span className="event-list-icon">{icon.symbol}</span>
+                    <span className="event-list-icon" style={category ? { background: `${category.color}1A`, color: category.color } : undefined}>{category ? category.icon : icon.symbol}</span>
                     <span className="event-list-content">
                       <strong>{event.title}</strong>
                       <small>{formatDate(event.date)} ・ {getTimeLabel(event)} ・ {getMemberLabel(event.member)}</small>
                     </span>
-                    <span className="event-list-kind">{icon.label}</span>
+                    <span className="event-list-kind">{category ? `${category.name}` : icon.label}</span>
                   </button>
                 )
               })}
@@ -510,12 +860,210 @@ function App() {
           )}
         </section>
 
+        <section className="day-detail-panel" aria-labelledby="day-detail-title">
+          <div className="day-detail-header">
+            <div>
+              <p className="eyebrow">SELECTED DAY</p>
+              <h2 id="day-detail-title">{formatDate(selectedDayForList)}</h2>
+            </div>
+            <button type="button" className="add-button" onClick={openQuickAdd}>予定を追加</button>
+          </div>
+
+          {selectedDayEvents.length > 0 ? (
+            <div className="day-detail-list">
+              {selectedDayEvents.map((event) => {
+                const icon = iconOptions.find((option) => option.value === event.icon) ?? iconOptions[0]
+                const category = event.categoryId ? categoryMap.get(event.categoryId) ?? null : null
+                return (
+                  <button type="button" className="day-detail-item" key={event.id} onClick={() => openViewModal(event)}>
+                    <span className="day-detail-icon" style={category ? { background: `${category.color}1A`, color: category.color } : undefined}>{category ? category.icon : icon.symbol}</span>
+                    <span className="day-detail-copy">
+                      <strong>{event.title}</strong>
+                      <small>{getTimeLabel(event)} ・ {getMemberLabel(event.member)}</small>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="day-detail-empty">この日の予定はまだありません。予定を追加してください。</p>
+          )}
+        </section>
+
+        <section className="fertility-panel" aria-labelledby="fertility-records-title">
+          <div className="fertility-header">
+            <div>
+              <p className="eyebrow">FERTILITY</p>
+              <h2 id="fertility-records-title">生理・治療記録</h2>
+            </div>
+            <button type="button" className="period-button" onClick={activePeriod ? handleEndPeriod : handleStartPeriod}>
+              {activePeriod ? '生理終了を記録' : '生理開始を記録'}
+            </button>
+          </div>
+
+          <div className="period-summary">
+            {latestPeriod ? (
+              <>
+                <strong>{latestPeriod.start_date} ～ {latestPeriod.end_date ?? '今日'}</strong>
+                <span>{latestPeriod.end_date ? '完了' : '継続中'}</span>
+              </>
+            ) : (
+              <>
+                <strong>生理記録がまだありません</strong>
+                <span>開始日を記録してください</span>
+              </>
+            )}
+          </div>
+
+          <div className="cycle-section">
+            <div className="section-header">
+              <h3>周期一覧</h3>
+            </div>
+            {cycleCards.length > 0 ? (
+              <div className="cycle-list">
+                {cycleCards.map((cycle, index) => (
+                  <article className="cycle-card" key={cycle.id}>
+                    <div className="cycle-card-header">
+                      <span className="cycle-number">第{cycleCards.length - index}周期</span>
+                      <span className={`cycle-status ${cycle.end_date ? 'closed' : 'open'}`}>{cycle.end_date ? '終了' : '進行中'}</span>
+                    </div>
+                    <p className="cycle-range">{cycle.start_date} ～ {cycle.end_date ?? '〜'}</p>
+                    <p className="cycle-metadata">治療法: {cycle.treatment_type ?? '未設定'} / 回数: {cycle.event_count + cycle.self_test_count}</p>
+                    <div className="cycle-result-row">
+                      <button type="button" className={cycle.result === '陰性' ? 'result-button selected' : 'result-button'} onClick={() => handleCycleResult(cycle.id, '陰性')}>陰性</button>
+                      <button type="button" className={cycle.result === '陽性' ? 'result-button selected positive' : 'result-button positive'} onClick={() => handleCycleResult(cycle.id, '陽性')}>陽性</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="empty-note">周期の記録がまだありません。</p>
+            )}
+          </div>
+
+          <div className="self-test-section">
+            <div className="section-header">
+              <h3>自己検査</h3>
+            </div>
+            <div className="self-test-form">
+              <div className="form-group compact">
+                <label htmlFor="selftest-date">検査日</label>
+                <input id="selftest-date" type="date" value={selfTestDate} onChange={(event) => setSelfTestDate(event.target.value)} />
+              </div>
+              <div className="form-group compact">
+                <label htmlFor="selftest-type">種類</label>
+                <select id="selftest-type" value={selfTestType} onChange={(event) => setSelfTestType(event.target.value as 'ovulation' | 'pregnancy')}>
+                  <option value="ovulation">排卵検査薬</option>
+                  <option value="pregnancy">妊娠検査薬</option>
+                </select>
+              </div>
+              <div className="form-group compact">
+                <label htmlFor="selftest-result">結果</label>
+                <select id="selftest-result" value={selfTestResult} onChange={(event) => setSelfTestResult(event.target.value as 'negative' | 'positive' | 'pending')}>
+                  <option value="negative">陰性</option>
+                  <option value="positive">陽性</option>
+                  <option value="pending">判定中</option>
+                </select>
+              </div>
+              <div className="form-group compact full-width">
+                <label htmlFor="selftest-memo">メモ</label>
+                <textarea id="selftest-memo" value={selfTestMemo} onChange={(event) => setSelfTestMemo(event.target.value)} rows={2} />
+              </div>
+              <button type="button" className="add-button selftest-submit" onClick={handleCreateSelfTest}>自己検査を記録</button>
+            </div>
+
+            <div className="self-test-list">
+              {selfTests.length > 0 ? (
+                selfTests.sort((left, right) => new Date(right.tested_at).getTime() - new Date(left.tested_at).getTime()).map((selfTest) => (
+                  <div className="self-test-item" key={selfTest.id}>
+                    <div>
+                      <strong>{selfTest.type === 'ovulation' ? '排卵検査薬' : '妊娠検査薬'}</strong>
+                      <small>{selfTest.tested_at.slice(0, 10)} / {selfTest.result === 'negative' ? '陰性' : selfTest.result === 'positive' ? '陽性' : '判定中'}</small>
+                    </div>
+                    {selfTest.memo && <p>{selfTest.memo}</p>}
+                    <button type="button" className="remove-inline-button" onClick={() => handleDeleteSelfTest(selfTest.id)}>削除</button>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-note">自己検査の記録はまだありません。</p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="category-panel" aria-labelledby="category-manager-title">
+          <div className="section-header">
+            <h3 id="category-manager-title">カテゴリ管理</h3>
+          </div>
+          <div className="category-create-form">
+            <div className="form-group compact">
+              <label htmlFor="category-name">カテゴリ名</label>
+              <input id="category-name" type="text" value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="例：妊活費" />
+            </div>
+            <div className="form-group compact">
+              <label htmlFor="category-icon">アイコン</label>
+              <input id="category-icon" type="text" value={categoryIcon} onChange={(event) => setCategoryIcon(event.target.value.slice(0, 2))} maxLength={2} />
+            </div>
+            <div className="form-group compact">
+              <label htmlFor="category-color">色</label>
+              <input id="category-color" type="color" value={categoryColor} onChange={(event) => setCategoryColor(event.target.value)} />
+            </div>
+            <button type="button" className="add-button category-submit" onClick={handleCreateCategory}>カテゴリ追加</button>
+          </div>
+
+          <div className="category-list">
+            {categories.length > 0 ? (
+              categories.map((category) => (
+                <div className="category-item" key={category.id}>
+                  <div className="category-chip" style={{ backgroundColor: `${category.color}22`, borderColor: category.color }}>
+                    <span className="category-chip-icon" style={{ color: category.color }}>{category.icon}</span>
+                    <span>{category.name}</span>
+                  </div>
+                  <button type="button" className="remove-inline-button" onClick={() => handleDeleteCategory(category.id)}>削除</button>
+                </div>
+              ))
+            ) : (
+              <p className="empty-note">カテゴリはまだありません。</p>
+            )}
+          </div>
+        </section>
+
         <div className="legend">
           <div><span className="legend-dot me" />自分</div>
           <div><span className="legend-dot wife" />妻</div>
           <div><span className="legend-dot both" />ふたり</div>
           <span className="legend-hint">日付をタップして予定を追加</span>
         </div>
+
+        <section className="notification-panel" aria-labelledby="notification-panel-title">
+          <div className="section-header">
+            <div>
+              <p className="eyebrow">PWA / PUSH</p>
+              <h2 id="notification-panel-title">通知とホーム画面追加</h2>
+            </div>
+          </div>
+
+          <div className="notification-grid">
+            <div className="notification-card">
+              <h3>ホーム画面に追加</h3>
+              <p>iPhone / Android で使いやすいよう、アプリをPWAとして起動できます。</p>
+              <button type="button" className="add-button" onClick={handleInstallPwa} disabled={!installable}>
+                {installable ? 'インストールする' : 'インストール案内を準備中'}
+              </button>
+            </div>
+
+            <div className="notification-card">
+              <h3>通知の利用</h3>
+              <p>予定の前日通知や当日通知を使うための許可状態を管理します。</p>
+              <button type="button" className="add-button" onClick={handleEnableNotifications}>
+                {notificationPermission === 'granted' ? '通知はオンです' : '通知を有効にする'}
+              </button>
+              <small className="notification-status">
+                状態: {notificationPermission === 'unsupported' ? '未対応' : notificationPermission === 'granted' ? '許可済み' : notificationPermission === 'denied' ? '拒否済み' : '未設定'}
+              </small>
+            </div>
+          </div>
+        </section>
       </main>
 
       {isModalOpen && (
@@ -555,6 +1103,26 @@ function App() {
                   <div>
                     <dt>時間</dt>
                     <dd>{currentEvent.isAllDay ? '終日' : `${currentEvent.startTime || '--:--'} 〜 ${currentEvent.endTime || '--:--'}`}</dd>
+                  </div>
+                  <div>
+                    <dt>カテゴリ</dt>
+                    <dd>{selectedCategory ? (
+                      <span className="detail-tag" style={{ borderColor: selectedCategory.color, color: selectedCategory.color }}>
+                        {selectedCategory.icon} {selectedCategory.name}
+                      </span>
+                    ) : 'なし'}</dd>
+                  </div>
+                  <div>
+                    <dt>共有</dt>
+                    <dd>{currentEvent.shared === false ? '非共有' : '共有中'}</dd>
+                  </div>
+                  <div>
+                    <dt>通知</dt>
+                    <dd>{currentEvent.notifyBeforeDay ? '前日に通知' : 'なし'}</dd>
+                  </div>
+                  <div>
+                    <dt>金額</dt>
+                    <dd>{currentEvent.amount !== null && currentEvent.amount !== undefined ? `${currentEvent.amount.toLocaleString()}円` : '未登録'}</dd>
                   </div>
                 </dl>
 
@@ -601,6 +1169,16 @@ function App() {
                 </div>
 
                 <div className="form-group">
+                  <label>カテゴリ</label>
+                  <select value={selectedCategoryId ?? ''} onChange={(event) => setSelectedCategoryId(event.target.value ? Number(event.target.value) : null)}>
+                    <option value="">カテゴリなし</option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>{category.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
                   <label>アイコン</label>
                   <div className="icon-select">
                     {iconOptions.map((option) => (
@@ -617,6 +1195,25 @@ function App() {
                     <input type="checkbox" checked={isAllDay} onChange={(event) => setIsAllDay(event.target.checked)} />
                     <span>終日予定</span>
                   </label>
+                </div>
+
+                <div className="form-group checkbox-group">
+                  <label className="checkbox-label">
+                    <input type="checkbox" checked={eventShared} onChange={(event) => setEventShared(event.target.checked)} />
+                    <span>相手と共有</span>
+                  </label>
+                </div>
+
+                <div className="form-group checkbox-group">
+                  <label className="checkbox-label">
+                    <input type="checkbox" checked={eventNotifyBeforeDay} onChange={(event) => setEventNotifyBeforeDay(event.target.checked)} />
+                    <span>前日に通知する</span>
+                  </label>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="event-amount">金額（任意）</label>
+                  <input id="event-amount" type="number" min="0" step="100" value={eventAmount} onChange={(event) => setEventAmount(event.target.value)} placeholder="0" />
                 </div>
 
                 {!isAllDay && (
