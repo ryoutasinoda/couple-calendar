@@ -18,8 +18,10 @@ import {
   logout,
   regenerateInviteCode,
   startPeriod,
+  updateCategory,
   updateCycle,
   updateEvent as updateApiEvent,
+  updateSelfTest,
   type ApiCategory,
   type ApiCycle,
   type ApiEvent,
@@ -47,13 +49,16 @@ type Event = {
   id: number
   title: string
   date: string
+  endDate?: string | null
   member: Member
   isAllDay: boolean
   startTime: string
   endTime: string
   memo: string
+  location: string
   icon: EventIcon
   categoryId?: number | null
+  cycleId?: number | null
   amount?: number | null
   shared?: boolean
   notifyBeforeDay?: boolean
@@ -188,13 +193,16 @@ const apiEventToLocalEvent = (event: ApiEvent): Event => ({
   id: event.id,
   title: event.title,
   date: event.start_date,
+  endDate: event.end_date,
   member: event.target === 'wife' ? 'wife' : event.target === 'both' ? 'both' : 'me',
   isAllDay: Boolean(event.is_all_day),
   startTime: event.start_time ?? '',
   endTime: event.end_time ?? '',
   memo: event.memo ?? '',
+  location: event.location ?? '',
   icon: iconOptions.some((option) => option.value === event.icon) ? event.icon as EventIcon : 'calendar',
   categoryId: event.category_id,
+  cycleId: event.cycle_id,
   amount: event.amount,
   shared: Boolean(event.shared),
   notifyBeforeDay: Boolean(event.notify_before_day),
@@ -204,13 +212,16 @@ const apiEventToLocalEvent = (event: ApiEvent): Event => ({
 const localEventToApiPayload = (event: Omit<Event, 'id' | 'source'>) => ({
   title: event.title,
   start_date: event.date,
+  end_date: event.endDate ?? '',
   is_all_day: event.isAllDay,
   start_time: event.isAllDay ? '' : event.startTime,
   end_time: event.isAllDay ? '' : event.endTime,
   target: event.member === 'wife' ? 'wife' : event.member === 'both' ? 'both' : 'husband',
   icon: event.icon,
   memo: event.memo,
+  location: event.location,
   category_id: event.categoryId ?? null,
+  cycle_id: event.cycleId ?? null,
   amount: event.amount ?? null,
   shared: event.shared === false ? 0 : 1,
   notify_before_day: event.notifyBeforeDay === true,
@@ -242,15 +253,22 @@ function App() {
   const [startTime, setStartTime] = useState('')
   const [endTime, setEndTime] = useState('')
   const [eventMemo, setEventMemo] = useState('')
+  const [eventLocation, setEventLocation] = useState('')
+  const [eventEndDate, setEventEndDate] = useState('')
   const [eventIcon, setEventIcon] = useState<EventIcon>('calendar')
   const [eventAmount, setEventAmount] = useState('')
   const [eventShared, setEventShared] = useState(true)
   const [eventNotifyBeforeDay, setEventNotifyBeforeDay] = useState(false)
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null)
+  const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null)
   const [categories, setCategories] = useState<ApiCategory[]>([])
   const [categoryName, setCategoryName] = useState('')
   const [categoryIcon, setCategoryIcon] = useState('✦')
   const [categoryColor, setCategoryColor] = useState('#7a7ae6')
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null)
+  const [editingCategoryName, setEditingCategoryName] = useState('')
+  const [editingCategoryIcon, setEditingCategoryIcon] = useState('')
+  const [editingCategoryColor, setEditingCategoryColor] = useState('#7a7ae6')
   const [formError, setFormError] = useState('')
   const [showFertilityOnly, setShowFertilityOnly] = useState(false)
   const [dataMessage, setDataMessage] = useState('')
@@ -259,11 +277,25 @@ function App() {
   const [cycles, setCycles] = useState<CycleRecord[]>([])
   const [selfTests, setSelfTests] = useState<SelfTestRecord[]>([])
   const [selfTestDate, setSelfTestDate] = useState(() => formatJstDateKey(new Date()))
+  const [selfTestTime, setSelfTestTime] = useState(() => `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`)
   const [selfTestType, setSelfTestType] = useState<'ovulation' | 'pregnancy'>('ovulation')
   const [selfTestResult, setSelfTestResult] = useState<'negative' | 'positive' | 'pending'>('negative')
   const [selfTestMemo, setSelfTestMemo] = useState('')
+  const [editingSelfTestId, setEditingSelfTestId] = useState<number | null>(null)
+  const [editingSelfTestDate, setEditingSelfTestDate] = useState('')
+  const [editingSelfTestTime, setEditingSelfTestTime] = useState('')
+  const [editingSelfTestType, setEditingSelfTestType] = useState<'ovulation' | 'pregnancy'>('ovulation')
+  const [editingSelfTestResult, setEditingSelfTestResult] = useState<'negative' | 'positive' | 'pending'>('negative')
+  const [editingSelfTestMemo, setEditingSelfTestMemo] = useState('')
+  const [selfTestCycleId, setSelfTestCycleId] = useState<number | null>(null)
+  const [editingSelfTestCycleId, setEditingSelfTestCycleId] = useState<number | null>(null)
+  const [editingCycleId, setEditingCycleId] = useState<number | null>(null)
+  const [editingCycleStartDate, setEditingCycleStartDate] = useState('')
+  const [editingCycleEndDate, setEditingCycleEndDate] = useState('')
+  const [editingCycleTreatment, setEditingCycleTreatment] = useState('')
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [installable, setInstallable] = useState(false)
+  const [pwaInstalled, setPwaInstalled] = useState(false)
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>('unsupported')
   const [notificationPreference, setNotificationPreference] = useState(false)
 
@@ -278,6 +310,22 @@ function App() {
 
   useEffect(() => {
     if (!authUser) return
+
+    const standaloneMedia = window.matchMedia('(display-mode: standalone)')
+    const updateInstallState = () => {
+      const iosStandalone = 'standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
+      setPwaInstalled(standaloneMedia.matches || iosStandalone)
+    }
+    updateInstallState()
+    standaloneMedia.addEventListener('change', updateInstallState)
+
+    const handleAppInstalled = () => {
+      setPwaInstalled(true)
+      setInstallable(false)
+      setDeferredPrompt(null)
+      setDataMessage('ホーム画面への追加が完了しました。')
+    }
+    window.addEventListener('appinstalled', handleAppInstalled)
 
     if ('Notification' in window) {
       setNotificationPermission(Notification.permission)
@@ -297,6 +345,8 @@ function App() {
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', handleAppInstalled)
+      standaloneMedia.removeEventListener('change', updateInstallState)
     }
   }, [authUser])
 
@@ -319,8 +369,13 @@ function App() {
   }, [notificationPreference])
 
   const handleInstallPwa = async () => {
+    if (pwaInstalled) {
+      setDataMessage('このアプリはすでにホーム画面へ追加されています。')
+      return
+    }
+
     if (!deferredPrompt) {
-      setDataMessage('このブラウザではインストール案内が表示されません。Safari の「ホーム画面に追加」をご利用ください。')
+      setDataMessage('インストール案内を自動表示できない環境です。iPhoneは共有ボタンから「ホーム画面に追加」、Androidはブラウザメニューから「アプリをインストール」を選択してください。')
       return
     }
 
@@ -458,6 +513,11 @@ function App() {
   const getDateString = (day: number) =>
     `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 
+  const getPeriodForDate = (date: string) => periods.find((period) => {
+    const periodEnd = period.end_date ?? todayString
+    return date >= period.start_date && date <= periodEnd
+  }) ?? null
+
   const formatDate = (date: string) => {
     const [dateYear, dateMonth, dateDay] = date.split('-').map(Number)
     if (!dateYear || !dateMonth || !dateDay) return date
@@ -472,14 +532,20 @@ function App() {
       return left.startTime.localeCompare(right.startTime) || left.id - right.id
     })
 
-  const getEvents = (day: number) => sortEvents(events.filter((event) => event.date === getDateString(day)))
-  const selectedDayEvents = useMemo(() => sortEvents(events.filter((event) => event.date === selectedDayForList)), [events, selectedDayForList])
+  const isEventOnDate = (event: Event, date: string) => event.date <= date && (!event.endDate || date <= event.endDate)
+  const getEvents = (day: number) => {
+    const date = getDateString(day)
+    return sortEvents(events.filter((event) => isEventOnDate(event, date)))
+  }
+  const selectedDayEvents = useMemo(() => sortEvents(events.filter((event) => isEventOnDate(event, selectedDayForList))), [events, selectedDayForList])
 
   const categoryMap = useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories])
 
   const isFertilityEvent = (event: Event) => fertilityIcons.includes(event.icon)
 
-  const monthEvents = sortEvents(events.filter((event) => event.date.startsWith(`${year}-${String(month + 1).padStart(2, '0')}-`)))
+  const monthStart = `${year}-${String(month + 1).padStart(2, '0')}-01`
+  const monthEnd = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
+  const monthEvents = sortEvents(events.filter((event) => event.date <= monthEnd && (!event.endDate || event.endDate >= monthStart)))
     .filter((event) => !showFertilityOnly || isFertilityEvent(event))
 
   const getTimeLabel = (event: Event) => event.isAllDay
@@ -494,8 +560,11 @@ function App() {
     setStartTime('')
     setEndTime('')
     setEventMemo('')
+    setEventLocation('')
+    setEventEndDate('')
     setEventIcon('calendar')
     setSelectedCategoryId(null)
+    setSelectedCycleId(null)
     setEventAmount('')
     setEventShared(true)
     setEventNotifyBeforeDay(false)
@@ -511,8 +580,11 @@ function App() {
     setStartTime(event.startTime)
     setEndTime(event.endTime)
     setEventMemo(event.memo)
+    setEventLocation(event.location)
+    setEventEndDate(event.endDate ?? '')
     setEventIcon(event.icon)
     setSelectedCategoryId(event.categoryId ?? null)
+    setSelectedCycleId(event.cycleId ?? null)
     setEventAmount(event.amount !== null && event.amount !== undefined ? String(event.amount) : '')
     setEventShared(event.shared ?? true)
     setEventNotifyBeforeDay(event.notifyBeforeDay ?? false)
@@ -577,19 +649,30 @@ function App() {
       setFormError('終了時間は開始時間以降にしてください。開始・終了時間を確認してください。')
       return
     }
+    if (eventEndDate && eventEndDate < selectedDate) {
+      setFormError('終了日は開始日以降にしてください。')
+      return
+    }
+    if (eventAmount.trim() !== '' && (!Number.isFinite(Number(eventAmount)) || Number(eventAmount) < 0)) {
+      setFormError('金額は0以上の数値で入力してください。')
+      return
+    }
 
     setFormError('')
 
     const eventData = {
       title: eventTitle.trim(),
       date: selectedDate,
+      endDate: eventEndDate || null,
       member: eventMember,
       isAllDay,
       startTime: isAllDay ? '' : startTime,
       endTime: isAllDay ? '' : endTime,
       memo: eventMemo.trim(),
+      location: eventLocation.trim(),
       icon: eventIcon,
       categoryId: selectedCategoryId,
+      cycleId: selectedCycleId,
       amount: eventAmount.trim() === '' ? null : Number(eventAmount),
       shared: eventShared,
       notifyBeforeDay: eventNotifyBeforeDay,
@@ -657,6 +740,40 @@ function App() {
     }
   }
 
+  const beginCategoryEdit = (category: ApiCategory) => {
+    setEditingCategoryId(category.id)
+    setEditingCategoryName(category.name)
+    setEditingCategoryIcon(category.icon)
+    setEditingCategoryColor(category.color)
+  }
+
+  const cancelCategoryEdit = () => {
+    setEditingCategoryId(null)
+    setEditingCategoryName('')
+    setEditingCategoryIcon('')
+    setEditingCategoryColor('#7a7ae6')
+  }
+
+  const saveCategoryEdit = async () => {
+    if (editingCategoryId === null || !editingCategoryName.trim() || !editingCategoryIcon.trim()) {
+      setDataMessage('カテゴリ名とアイコンを入力してください。')
+      return
+    }
+
+    try {
+      await updateCategory(editingCategoryId, {
+        name: editingCategoryName.trim(),
+        icon: editingCategoryIcon.trim(),
+        color: editingCategoryColor,
+      })
+      await refreshCategories()
+      cancelCategoryEdit()
+      setDataMessage('カテゴリを更新しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : 'カテゴリの更新に失敗しました。')
+    }
+  }
+
   const handleDeleteCategory = async (categoryId: number) => {
     if (!window.confirm('このカテゴリを削除してよろしいですか？')) return
 
@@ -716,6 +833,45 @@ function App() {
     }
   }
 
+  const beginCycleEdit = (cycle: CycleRecord) => {
+    setEditingCycleId(cycle.id)
+    setEditingCycleStartDate(cycle.start_date)
+    setEditingCycleEndDate(cycle.end_date ?? '')
+    setEditingCycleTreatment(cycle.treatment_type ?? '')
+  }
+
+  const cancelCycleEdit = () => {
+    setEditingCycleId(null)
+    setEditingCycleStartDate('')
+    setEditingCycleEndDate('')
+    setEditingCycleTreatment('')
+  }
+
+  const saveCycleEdit = async () => {
+    if (editingCycleId === null || !editingCycleStartDate) {
+      setDataMessage('周期の開始日を入力してください。')
+      return
+    }
+    if (editingCycleEndDate && editingCycleEndDate < editingCycleStartDate) {
+      setDataMessage('周期の終了日は開始日以降にしてください。')
+      return
+    }
+
+    try {
+      await updateCycle(editingCycleId, {
+        start_date: editingCycleStartDate,
+        end_date: editingCycleEndDate || undefined,
+        treatment_type: editingCycleTreatment.trim() || undefined,
+      })
+      const response = await getCycles()
+      setCycles(response.cycles)
+      cancelCycleEdit()
+      setDataMessage('周期を更新しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '周期の更新に失敗しました。')
+    }
+  }
+
   const handleCreateSelfTest = async () => {
     if (!selfTestDate) {
       setDataMessage('検査日を選択してください。')
@@ -726,8 +882,9 @@ function App() {
       await createSelfTest({
         type: selfTestType,
         result: selfTestResult,
-        tested_at: `${selfTestDate}T09:00:00`,
+        tested_at: `${selfTestDate}T${selfTestTime || '00:00'}:00`,
         memo: selfTestMemo.trim() || undefined,
+        cycle_id: selfTestCycleId ?? undefined,
       })
       const response = await getSelfTests()
       setSelfTests(response.self_tests)
@@ -748,6 +905,47 @@ function App() {
     }
   }
 
+  const beginSelfTestEdit = (selfTest: SelfTestRecord) => {
+    setEditingSelfTestId(selfTest.id)
+    setEditingSelfTestDate(selfTest.tested_at.slice(0, 10))
+    setEditingSelfTestTime(selfTest.tested_at.slice(11, 16) || '00:00')
+    setEditingSelfTestType(selfTest.type)
+    setEditingSelfTestResult(selfTest.result)
+    setEditingSelfTestMemo(selfTest.memo ?? '')
+    setEditingSelfTestCycleId(selfTest.cycle_id)
+  }
+
+  const cancelSelfTestEdit = () => {
+    setEditingSelfTestId(null)
+    setEditingSelfTestDate('')
+    setEditingSelfTestTime('')
+    setEditingSelfTestMemo('')
+    setEditingSelfTestCycleId(null)
+  }
+
+  const saveSelfTestEdit = async () => {
+    if (editingSelfTestId === null || !editingSelfTestDate || !editingSelfTestTime) {
+      setDataMessage('検査日時を入力してください。')
+      return
+    }
+
+    try {
+      await updateSelfTest(editingSelfTestId, {
+        type: editingSelfTestType,
+        result: editingSelfTestResult,
+        tested_at: `${editingSelfTestDate}T${editingSelfTestTime}:00`,
+        memo: editingSelfTestMemo.trim(),
+        cycle_id: editingSelfTestCycleId,
+      })
+      const response = await getSelfTests()
+      setSelfTests(response.self_tests)
+      cancelSelfTestEdit()
+      setDataMessage('自己検査を更新しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '自己検査の更新に失敗しました。')
+    }
+  }
+
   const isEditing = modalMode === 'edit'
   const selectedCategory = categories.find((category) => category.id === (currentEvent?.categoryId ?? selectedCategoryId)) ?? null
 
@@ -758,6 +956,38 @@ function App() {
       setDataMessage('新しい招待コードを発行しました。古いコードは無効です。')
     } catch (caughtError) {
       setDataMessage(caughtError instanceof Error ? caughtError.message : '招待コードの発行に失敗しました。')
+    }
+  }
+
+  const handleExportData = async () => {
+    if (!authUser) return
+
+    try {
+      const allEventsResponse = await getApiEvents('1900-01-01', '2200-12-31')
+      const exportPayload = {
+        format: 'couple-calendar-export',
+        version: 1,
+        exported_at: new Date().toISOString(),
+        user: {
+          display_name: authUser.display_name,
+          couple_id: authUser.couple_id,
+        },
+        events: allEventsResponse.events,
+        categories,
+        periods,
+        cycles,
+        self_tests: selfTests,
+      }
+      const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' })
+      const downloadUrl = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = downloadUrl
+      anchor.download = `couple-calendar-${formatJstDateKey(new Date())}.json`
+      anchor.click()
+      URL.revokeObjectURL(downloadUrl)
+      setDataMessage('予定・カテゴリ・妊活記録をJSONで書き出しました。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : 'データの書き出しに失敗しました。')
     }
   }
 
@@ -816,6 +1046,10 @@ function App() {
         {inviteCode && <p className="invite-code" role="status">招待コード: <strong>{inviteCode}</strong></p>}
         {dataMessage && <p className="data-message" role="status">{dataMessage}</p>}
 
+        <div className="data-tools">
+          <button type="button" className="data-button" onClick={handleExportData}>データを書き出す</button>
+        </div>
+
         <div className="calendar-card">
           <div className="weekdays">
             {['日', '月', '火', '水', '木', '金', '土'].map((weekday, index) => (
@@ -828,9 +1062,10 @@ function App() {
               const date = getDateString(day)
               const dayOfWeek = new Date(year, month, day).getDay()
               const dayEvents = getEvents(day)
+              const period = getPeriodForDate(date)
               return (
                 <div
-                  className={`day ${date === todayString ? 'today' : ''} ${date === selectedDayForList ? 'selected-day' : ''}`}
+                  className={`day ${date === todayString ? 'today' : ''} ${date === selectedDayForList ? 'selected-day' : ''} ${period ? `period-day ${period.end_date ? 'period-closed' : 'period-open'} ${date === period.start_date ? 'period-start' : ''}` : ''}`}
                   key={date}
                   onClick={() => {
                     setSelectedDayForList(date)
@@ -848,6 +1083,7 @@ function App() {
                 >
                   <div className="day-header">
                     <span className={`day-number ${dayOfWeek === 0 ? 'sunday' : dayOfWeek === 6 ? 'saturday' : ''}`}>{day}</span>
+                    {period && date === period.start_date && <span className="period-marker" aria-label="生理開始">☾</span>}
                     {getHolidayName(day) && <span className="holiday-label">{getHolidayName(day)}</span>}
                   </div>
                   <div className="events">
@@ -1002,6 +1238,33 @@ function App() {
                       <button type="button" className={cycle.result === '陰性' ? 'result-button selected' : 'result-button'} onClick={() => handleCycleResult(cycle.id, '陰性')}>陰性</button>
                       <button type="button" className={cycle.result === '陽性' ? 'result-button selected positive' : 'result-button positive'} onClick={() => handleCycleResult(cycle.id, '陽性')}>陽性</button>
                     </div>
+                    {editingCycleId === cycle.id ? (
+                      <div className="cycle-edit-form">
+                        <div className="form-group compact">
+                          <label htmlFor={`cycle-start-${cycle.id}`}>開始日</label>
+                          <input id={`cycle-start-${cycle.id}`} type="date" value={editingCycleStartDate} onChange={(event) => setEditingCycleStartDate(event.target.value)} />
+                        </div>
+                        <div className="form-group compact">
+                          <label htmlFor={`cycle-end-${cycle.id}`}>終了日</label>
+                          <input id={`cycle-end-${cycle.id}`} type="date" min={editingCycleStartDate} value={editingCycleEndDate} onChange={(event) => setEditingCycleEndDate(event.target.value)} />
+                        </div>
+                        <div className="form-group compact full-width">
+                          <label htmlFor={`cycle-treatment-${cycle.id}`}>治療法</label>
+                          <select id={`cycle-treatment-${cycle.id}`} value={editingCycleTreatment} onChange={(event) => setEditingCycleTreatment(event.target.value)}>
+                            <option value="">未設定</option>
+                            <option value="タイミング法">タイミング法</option>
+                            <option value="人工授精">人工授精</option>
+                            <option value="体外受精">体外受精</option>
+                          </select>
+                        </div>
+                        <div className="cycle-edit-actions">
+                          <button type="button" className="cancel-button" onClick={cancelCycleEdit}>キャンセル</button>
+                          <button type="button" className="add-button" onClick={saveCycleEdit}>周期を保存</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button type="button" className="cycle-edit-button" onClick={() => beginCycleEdit(cycle)}>周期を編集</button>
+                    )}
                   </article>
                 ))}
               </div>
@@ -1020,6 +1283,10 @@ function App() {
                 <input id="selftest-date" type="date" value={selfTestDate} onChange={(event) => setSelfTestDate(event.target.value)} />
               </div>
               <div className="form-group compact">
+                <label htmlFor="selftest-time">検査時刻</label>
+                <input id="selftest-time" type="time" value={selfTestTime} onChange={(event) => setSelfTestTime(event.target.value)} />
+              </div>
+              <div className="form-group compact">
                 <label htmlFor="selftest-type">種類</label>
                 <select id="selftest-type" value={selfTestType} onChange={(event) => setSelfTestType(event.target.value as 'ovulation' | 'pregnancy')}>
                   <option value="ovulation">排卵検査薬</option>
@@ -1035,6 +1302,15 @@ function App() {
                 </select>
               </div>
               <div className="form-group compact full-width">
+                <label htmlFor="selftest-cycle">関連する周期</label>
+                <select id="selftest-cycle" value={selfTestCycleId ?? ''} onChange={(event) => setSelfTestCycleId(event.target.value ? Number(event.target.value) : null)}>
+                  <option value="">周期に紐付けない</option>
+                  {cycleCards.map((cycle) => (
+                    <option key={cycle.id} value={cycle.id}>開始 {cycle.start_date}{cycle.end_date ? ` 〜 ${cycle.end_date}` : '（進行中）'}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group compact full-width">
                 <label htmlFor="selftest-memo">メモ</label>
                 <textarea id="selftest-memo" value={selfTestMemo} onChange={(event) => setSelfTestMemo(event.target.value)} rows={2} />
               </div>
@@ -1045,12 +1321,62 @@ function App() {
               {selfTests.length > 0 ? (
                 selfTests.sort((left, right) => new Date(right.tested_at).getTime() - new Date(left.tested_at).getTime()).map((selfTest) => (
                   <div className="self-test-item" key={selfTest.id}>
-                    <div>
-                      <strong>{selfTest.type === 'ovulation' ? '排卵検査薬' : '妊娠検査薬'}</strong>
-                      <small>{selfTest.tested_at.slice(0, 10)} / {selfTest.result === 'negative' ? '陰性' : selfTest.result === 'positive' ? '陽性' : '判定中'}</small>
-                    </div>
-                    {selfTest.memo && <p>{selfTest.memo}</p>}
-                    <button type="button" className="remove-inline-button" onClick={() => handleDeleteSelfTest(selfTest.id)}>削除</button>
+                    {editingSelfTestId === selfTest.id ? (
+                      <div className="self-test-edit-form">
+                        <div className="form-group compact">
+                          <label htmlFor={`selftest-edit-date-${selfTest.id}`}>検査日</label>
+                          <input id={`selftest-edit-date-${selfTest.id}`} type="date" value={editingSelfTestDate} onChange={(event) => setEditingSelfTestDate(event.target.value)} />
+                        </div>
+                        <div className="form-group compact">
+                          <label htmlFor={`selftest-edit-time-${selfTest.id}`}>時刻</label>
+                          <input id={`selftest-edit-time-${selfTest.id}`} type="time" value={editingSelfTestTime} onChange={(event) => setEditingSelfTestTime(event.target.value)} />
+                        </div>
+                        <div className="form-group compact">
+                          <label htmlFor={`selftest-edit-type-${selfTest.id}`}>種類</label>
+                          <select id={`selftest-edit-type-${selfTest.id}`} value={editingSelfTestType} onChange={(event) => setEditingSelfTestType(event.target.value as 'ovulation' | 'pregnancy')}>
+                            <option value="ovulation">排卵検査薬</option>
+                            <option value="pregnancy">妊娠検査薬</option>
+                          </select>
+                        </div>
+                        <div className="form-group compact">
+                          <label htmlFor={`selftest-edit-result-${selfTest.id}`}>結果</label>
+                          <select id={`selftest-edit-result-${selfTest.id}`} value={editingSelfTestResult} onChange={(event) => setEditingSelfTestResult(event.target.value as 'negative' | 'positive' | 'pending')}>
+                            <option value="negative">陰性</option>
+                            <option value="positive">陽性</option>
+                            <option value="pending">判定中</option>
+                          </select>
+                        </div>
+                        <div className="form-group compact full-width">
+                          <label htmlFor={`selftest-edit-cycle-${selfTest.id}`}>関連する周期</label>
+                          <select id={`selftest-edit-cycle-${selfTest.id}`} value={editingSelfTestCycleId ?? ''} onChange={(event) => setEditingSelfTestCycleId(event.target.value ? Number(event.target.value) : null)}>
+                            <option value="">周期に紐付けない</option>
+                            {cycleCards.map((cycle) => (
+                              <option key={cycle.id} value={cycle.id}>開始 {cycle.start_date}{cycle.end_date ? ` 〜 ${cycle.end_date}` : '（進行中）'}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="form-group compact full-width">
+                          <label htmlFor={`selftest-edit-memo-${selfTest.id}`}>メモ</label>
+                          <textarea id={`selftest-edit-memo-${selfTest.id}`} value={editingSelfTestMemo} onChange={(event) => setEditingSelfTestMemo(event.target.value)} rows={2} />
+                        </div>
+                        <div className="self-test-edit-actions">
+                          <button type="button" className="cancel-button" onClick={cancelSelfTestEdit}>キャンセル</button>
+                          <button type="button" className="add-button" onClick={saveSelfTestEdit}>保存</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <strong>{selfTest.type === 'ovulation' ? '排卵検査薬' : '妊娠検査薬'}</strong>
+                          <small>{selfTest.tested_at.slice(0, 16).replace('T', ' ')} / {selfTest.result === 'negative' ? '陰性' : selfTest.result === 'positive' ? '陽性' : '判定中'}</small>
+                        </div>
+                        {selfTest.memo && <p>{selfTest.memo}</p>}
+                        <div className="self-test-item-actions">
+                          <button type="button" className="edit-inline-button" onClick={() => beginSelfTestEdit(selfTest)}>編集</button>
+                          <button type="button" className="remove-inline-button" onClick={() => handleDeleteSelfTest(selfTest.id)}>削除</button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))
               ) : (
@@ -1084,11 +1410,26 @@ function App() {
             {categories.length > 0 ? (
               categories.map((category) => (
                 <div className="category-item" key={category.id}>
-                  <div className="category-chip" style={{ backgroundColor: `${category.color}22`, borderColor: category.color }}>
-                    <span className="category-chip-icon" style={{ color: category.color }}>{category.icon}</span>
-                    <span>{category.name}</span>
-                  </div>
-                  <button type="button" className="remove-inline-button" onClick={() => handleDeleteCategory(category.id)}>削除</button>
+                  {editingCategoryId === category.id ? (
+                    <div className="category-edit-form">
+                      <input aria-label="カテゴリ名" type="text" value={editingCategoryName} onChange={(event) => setEditingCategoryName(event.target.value)} />
+                      <input aria-label="カテゴリアイコン" type="text" value={editingCategoryIcon} onChange={(event) => setEditingCategoryIcon(event.target.value.slice(0, 2))} maxLength={2} />
+                      <input aria-label="カテゴリ色" type="color" value={editingCategoryColor} onChange={(event) => setEditingCategoryColor(event.target.value)} />
+                      <button type="button" className="add-button" onClick={saveCategoryEdit}>保存</button>
+                      <button type="button" className="cancel-button" onClick={cancelCategoryEdit}>戻る</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="category-chip" style={{ backgroundColor: `${category.color}22`, borderColor: category.color }}>
+                        <span className="category-chip-icon" style={{ color: category.color }}>{category.icon}</span>
+                        <span>{category.name}</span>
+                      </div>
+                      <div className="category-item-actions">
+                        <button type="button" className="edit-inline-button" onClick={() => beginCategoryEdit(category)}>編集</button>
+                        <button type="button" className="remove-inline-button" onClick={() => handleDeleteCategory(category.id)}>削除</button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))
             ) : (
@@ -1115,9 +1456,9 @@ function App() {
           <div className="notification-grid">
             <div className="notification-card">
               <h3>ホーム画面に追加</h3>
-              <p>iPhone / Android で使いやすいよう、アプリをPWAとして起動できます。</p>
-              <button type="button" className="add-button" onClick={handleInstallPwa} disabled={!installable}>
-                {installable ? 'インストールする' : 'インストール案内を準備中'}
+              <p>{pwaInstalled ? 'この端末ではホーム画面から起動できます。' : 'iPhoneは共有メニュー、Androidはブラウザメニューからホーム画面へ追加できます。'}</p>
+              <button type="button" className="add-button" onClick={handleInstallPwa} disabled={pwaInstalled}>
+                {pwaInstalled ? 'インストール済み' : installable ? 'インストールする' : 'インストール方法を表示'}
               </button>
             </div>
 
@@ -1163,7 +1504,7 @@ function App() {
                 <dl className="detail-list">
                   <div>
                     <dt>日付</dt>
-                    <dd>{formatDate(currentEvent.date)}</dd>
+                    <dd>{formatDate(currentEvent.date)}{currentEvent.endDate ? ` 〜 ${formatDate(currentEvent.endDate)}` : ''}</dd>
                   </div>
                   <div>
                     <dt>予定種類</dt>
@@ -1188,6 +1529,14 @@ function App() {
                   <div>
                     <dt>通知</dt>
                     <dd>{currentEvent.notifyBeforeDay ? '前日に通知' : 'なし'}</dd>
+                  </div>
+                  <div>
+                    <dt>場所</dt>
+                    <dd>{currentEvent.location || '未登録'}</dd>
+                  </div>
+                  <div>
+                    <dt>関連周期</dt>
+                    <dd>{currentEvent.cycleId ? cycleCards.find((cycle) => cycle.id === currentEvent.cycleId)?.start_date ?? '設定済み' : 'なし'}</dd>
                   </div>
                   <div>
                     <dt>金額</dt>
@@ -1237,12 +1586,33 @@ function App() {
                   <input id="event-date" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
                 </div>
 
+                <div className="form-grid">
+                  <div className="form-group">
+                    <label htmlFor="event-end-date">終了日（任意）</label>
+                    <input id="event-end-date" type="date" min={selectedDate} value={eventEndDate} onChange={(event) => setEventEndDate(event.target.value)} />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="event-location">場所（任意）</label>
+                    <input id="event-location" type="text" value={eventLocation} onChange={(event) => setEventLocation(event.target.value)} placeholder="病院名など" />
+                  </div>
+                </div>
+
                 <div className="form-group">
                   <label>カテゴリ</label>
                   <select value={selectedCategoryId ?? ''} onChange={(event) => setSelectedCategoryId(event.target.value ? Number(event.target.value) : null)}>
                     <option value="">カテゴリなし</option>
                     {categories.map((category) => (
                       <option key={category.id} value={category.id}>{category.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>関連する周期（任意）</label>
+                  <select value={selectedCycleId ?? ''} onChange={(event) => setSelectedCycleId(event.target.value ? Number(event.target.value) : null)}>
+                    <option value="">周期に紐付けない</option>
+                    {cycleCards.map((cycle) => (
+                      <option key={cycle.id} value={cycle.id}>開始 {cycle.start_date}{cycle.end_date ? ` 〜 ${cycle.end_date}` : '（進行中）'}</option>
                     ))}
                   </select>
                 </div>

@@ -223,7 +223,7 @@ export const createSelfTest = (selfTest: { type: SelfTestType; result: SelfTestR
     body: JSON.stringify(selfTest),
   })
 
-export const updateSelfTest = (id: number, selfTest: Partial<{ type: SelfTestType; result: SelfTestResult; tested_at: string; memo: string }>) =>
+export const updateSelfTest = (id: number, selfTest: Partial<{ type: SelfTestType; result: SelfTestResult; tested_at: string; memo: string; cycle_id: number | null }>) =>
   request<{ ok: true; self_test: ApiSelfTest }>(`/api/self-tests/${id}`, {
     method: 'PUT',
     body: JSON.stringify(selfTest),

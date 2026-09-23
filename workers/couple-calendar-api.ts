@@ -55,6 +55,17 @@ const PUSH_SUBSCRIPTIONS_TABLE = `
   )
 `
 
+const PUSH_NOTIFICATION_LOGS_TABLE = `
+  CREATE TABLE IF NOT EXISTS push_notification_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    notification_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(event_id, user_id, notification_date)
+  )
+`
+
 const isAllowedOrigin = (origin: string | null) => {
   if (!origin) return false
   if (ALLOWED_ORIGINS.has(origin)) return true
@@ -93,8 +104,20 @@ const readJsonBody = async (request: Request) => {
   }
 }
 
-const isValidDateString = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value)
-const isValidTimeString = (value: string) => /^\d{2}:\d{2}$/.test(value)
+const isValidDateString = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+const isValidTimeString = (value: string) => {
+  if (!/^\d{2}:\d{2}$/.test(value)) return false
+  const [hours, minutes] = value.split(':').map(Number)
+  return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59
+}
+const isValidDateTimeString = (value: string) => {
+  const date = new Date(value)
+  return !Number.isNaN(date.getTime())
+}
 
 const hashValue = async (value: string) => {
   const data = new TextEncoder().encode(value)
@@ -102,6 +125,56 @@ const hashValue = async (value: string) => {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('')
+}
+
+const bytesToBase64 = (bytes: Uint8Array) => btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''))
+
+const base64ToBytes = (value: string) => {
+  const binary = atob(value)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+const derivePasswordBits = async (password: string, salt: Uint8Array, iterations: number) => {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
+  return new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: salt as unknown as BufferSource, iterations, hash: 'SHA-256' },
+    key,
+    256,
+  ))
+}
+
+const hashPassword = async (password: string) => {
+  const salt = new Uint8Array(16)
+  crypto.getRandomValues(salt)
+  const iterations = 120000
+  const derived = await derivePasswordBits(password, salt, iterations)
+  return `pbkdf2-sha256$${iterations}$${bytesToBase64(salt)}$${bytesToBase64(derived)}`
+}
+
+const secureStringEqual = (left: string, right: string) => {
+  if (left.length !== right.length) return false
+  let difference = 0
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index)
+  }
+  return difference === 0
+}
+
+const verifyPassword = async (password: string, storedHash: string) => {
+  if (!storedHash.startsWith('pbkdf2-sha256$')) {
+    return secureStringEqual(await hashValue(password), storedHash)
+  }
+
+  const [, iterationValue, encodedSalt, encodedHash] = storedHash.split('$')
+  const iterations = Number(iterationValue)
+  if (!Number.isInteger(iterations) || iterations < 100000 || !encodedSalt || !encodedHash) return false
+
+  try {
+    const derived = await derivePasswordBits(password, base64ToBytes(encodedSalt), iterations)
+    return secureStringEqual(bytesToBase64(derived), encodedHash)
+  } catch {
+    return false
+  }
 }
 
 const createSessionId = () => {
@@ -144,31 +217,30 @@ const clearSessionCookie = (response: Response, request: Request) => {
 
 const isPushEnabled = (env: Env) => Boolean(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY)
 
-const sendPushToCouple = async (env: Env, coupleId: number, title: string, body: string) => {
+const formatJstDateKey = (date: Date) => new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Tokyo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(date)
+
+const sendPushNotification = async (env: Env, subscription: any, title: string, body: string, coupleId: number) => {
   if (!isPushEnabled(env)) return
-  const rows = await env.DB.prepare('SELECT * FROM push_subscriptions WHERE couple_id = ?').bind(coupleId).all()
   const payload = JSON.stringify({ title, body, tag: 'couple-calendar', data: { couple_id: coupleId } })
-  const sends = (rows.results ?? []).map(async (row: any) => {
-    try {
-      await webPush.sendNotification(
-        {
-          endpoint: row.endpoint,
-          keys: { p256dh: row.p256dh, auth: row.auth },
-        },
-        payload,
-        {
-          vapidDetails: {
-            subject: 'mailto:hello@couple-calendar.app',
-            publicKey: env.VAPID_PUBLIC_KEY!,
-            privateKey: env.VAPID_PRIVATE_KEY!,
-          },
-        },
-      )
-    } catch {
-      // Subscriptions may become invalid; they are silently removed on the next cleanup pass.
-    }
-  })
-  await Promise.allSettled(sends)
+  await webPush.sendNotification(
+    {
+      endpoint: subscription.endpoint,
+      keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+    },
+    payload,
+    {
+      vapidDetails: {
+        subject: 'mailto:hello@couple-calendar.app',
+        publicKey: env.VAPID_PUBLIC_KEY!,
+        privateKey: env.VAPID_PRIVATE_KEY!,
+      },
+    },
+  )
 }
 
 const ensureSchema = async (db: any) => {
@@ -259,6 +331,7 @@ const ensureSchema = async (db: any) => {
       updated_at TEXT NOT NULL
     )`,
     PUSH_SUBSCRIPTIONS_TABLE,
+    PUSH_NOTIFICATION_LOGS_TABLE,
   ]
 
   for (const statement of statements) {
@@ -279,6 +352,63 @@ const ensureSchema = async (db: any) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (!message.includes('duplicate column')) throw error
+    }
+  }
+}
+
+const sendScheduledNotifications = async (env: Env) => {
+  if (!isPushEnabled(env)) return
+
+  const notificationDate = formatJstDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000))
+  const eventRows = await env.DB.prepare(`
+    SELECT * FROM events
+    WHERE start_date = ? AND notify_before_day = 1
+  `).bind(notificationDate).all()
+
+  for (const event of eventRows.results ?? []) {
+    const subscriptions = await env.DB.prepare(`
+      SELECT push_subscriptions.*, couple_members.role
+      FROM push_subscriptions
+      LEFT JOIN couple_members
+        ON couple_members.user_id = push_subscriptions.user_id
+       AND couple_members.couple_id = push_subscriptions.couple_id
+      WHERE push_subscriptions.couple_id = ?
+    `).bind(event.couple_id).all()
+
+    for (const subscription of subscriptions.results ?? []) {
+      const isRecipient = event.shared
+        ? event.target === 'both' || subscription.role === event.target
+        : subscription.user_id === event.created_by
+      if (!isRecipient) continue
+
+      const existingLog = await env.DB.prepare(`
+        SELECT id FROM push_notification_logs
+        WHERE event_id = ? AND user_id = ? AND notification_date = ?
+      `).bind(event.id, subscription.user_id, notificationDate).first()
+      if (existingLog) continue
+
+      const timeLabel = event.is_all_day ? '終日' : event.start_time ? ` ${event.start_time}` : ''
+      const locationLabel = event.location ? ` / ${event.location}` : ''
+      try {
+        await sendPushNotification(
+          env,
+          subscription,
+          `明日の予定: ${event.title}`,
+          `${notificationDate}${timeLabel}${locationLabel}`,
+          event.couple_id,
+        )
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO push_notification_logs (event_id, user_id, notification_date, created_at)
+          VALUES (?, ?, ?, ?)
+        `).bind(event.id, subscription.user_id, notificationDate, new Date().toISOString()).run()
+      } catch (caughtError) {
+        const statusCode = typeof caughtError === 'object' && caughtError !== null && 'statusCode' in caughtError
+          ? Number((caughtError as { statusCode?: number }).statusCode)
+          : 0
+        if (statusCode === 404 || statusCode === 410) {
+          await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(subscription.endpoint).run()
+        }
+      }
     }
   }
 }
@@ -363,6 +493,13 @@ const createDefaultCategories = async (db: any, coupleId: number) => {
 }
 
 export default {
+  async scheduled(_controller: any, env: Env, context: any) {
+    context.waitUntil((async () => {
+      await ensureSchema(env.DB)
+      await sendScheduledNotifications(env)
+    })())
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     currentRequest = request
     try {
@@ -398,7 +535,7 @@ export default {
         return jsonResponse({ error: 'このログインIDは既に使われています。' }, 409)
       }
 
-      const passwordHash = await hashValue(password)
+      const passwordHash = await hashPassword(password)
       const result = await env.DB.prepare('INSERT INTO users (login_id, display_name, password_hash, created_at) VALUES (?, ?, ?, ?)')
         .bind(loginId, displayName, passwordHash, new Date().toISOString())
         .run()
@@ -431,9 +568,15 @@ export default {
         return jsonResponse({ error: 'ログイン情報が一致しません。' }, 401)
       }
 
-      const passwordHash = await hashValue(password)
-      if (user.password_hash !== passwordHash) {
+      const passwordMatches = await verifyPassword(password, user.password_hash)
+      if (!passwordMatches) {
         return jsonResponse({ error: 'ログイン情報が一致しません。' }, 401)
+      }
+
+      if (!user.password_hash.startsWith('pbkdf2-sha256$')) {
+        await env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+          .bind(await hashPassword(password), user.id)
+          .run()
       }
 
       const sessionId = createSessionId()
@@ -638,7 +781,7 @@ export default {
         const params: any[] = [auth.user.coupleId, auth.user.id]
 
         if (from && isValidDateString(from)) {
-          filters.push('start_date >= ?')
+          filters.push('(end_date IS NULL OR end_date >= ?)')
           params.push(from)
         }
         if (to && isValidDateString(to)) {
@@ -675,11 +818,23 @@ export default {
         if (!title) return jsonResponse({ error: 'title は必須です。' }, 400)
         if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
         if (endDate && !isValidDateString(endDate)) return jsonResponse({ error: 'end_date の形式が不正です。' }, 400)
+        if (endDate && endDate < startDate) return jsonResponse({ error: '終了日は開始日以降にしてください。' }, 400)
+        if (endDate && endDate < startDate) return jsonResponse({ error: '終了日は開始日以降にしてください。' }, 400)
         if (!VALID_TARGETS.has(target)) return jsonResponse({ error: 'target の値が不正です。' }, 400)
         if (!VALID_ICONS.has(icon)) return jsonResponse({ error: 'icon の値が不正です。' }, 400)
         if (!isAllDay && startTime && !isValidTimeString(startTime)) return jsonResponse({ error: 'start_time の形式が不正です。' }, 400)
         if (!isAllDay && endTime && !isValidTimeString(endTime)) return jsonResponse({ error: 'end_time の形式が不正です。' }, 400)
         if (!isAllDay && startTime && endTime && endTime < startTime) return jsonResponse({ error: '終了時刻は開始時刻以降にしてください。' }, 400)
+        if (amount !== null && (!Number.isFinite(amount) || !Number.isInteger(amount) || amount < 0)) return jsonResponse({ error: 'amount は0以上の整数で指定してください。' }, 400)
+
+        if (categoryId !== null) {
+          const category = await env.DB.prepare('SELECT id FROM categories WHERE id = ? AND couple_id = ?').bind(categoryId, auth.user.coupleId).first()
+          if (!category) return jsonResponse({ error: 'category_id が不正です。' }, 400)
+        }
+        if (cycleId !== null) {
+          const cycle = await env.DB.prepare('SELECT id FROM cycles WHERE id = ? AND couple_id = ?').bind(cycleId, auth.user.coupleId).first()
+          if (!cycle) return jsonResponse({ error: 'cycle_id が不正です。' }, 400)
+        }
 
         const normalizedStartTime = isAllDay ? null : startTime || null
         const normalizedEndTime = isAllDay ? null : endTime || null
@@ -758,6 +913,8 @@ export default {
         if (!title) return jsonResponse({ error: 'title は必須です。' }, 400)
         if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
         if (endDate && !isValidDateString(endDate)) return jsonResponse({ error: 'end_date の形式が不正です。' }, 400)
+        if (endDate && endDate < startDate) return jsonResponse({ error: '終了日は開始日以降にしてください。' }, 400)
+        if (endDate && endDate < startDate) return jsonResponse({ error: '終了日は開始日以降にしてください。' }, 400)
         if (!VALID_TARGETS.has(target)) return jsonResponse({ error: 'target の値が不正です。' }, 400)
         if (!VALID_ICONS.has(icon)) return jsonResponse({ error: 'icon の値が不正です。' }, 400)
 
@@ -765,6 +922,15 @@ export default {
         const normalizedEndTime = isAllDay ? null : (endTime || null)
         if (!isAllDay && normalizedStartTime && normalizedEndTime && normalizedEndTime < normalizedStartTime) {
           return jsonResponse({ error: '終了時刻は開始時刻以降にしてください。' }, 400)
+        }
+        if (amount !== null && (!Number.isFinite(amount) || !Number.isInteger(amount) || amount < 0)) return jsonResponse({ error: 'amount は0以上の整数で指定してください。' }, 400)
+        if (categoryId !== null) {
+          const category = await env.DB.prepare('SELECT id FROM categories WHERE id = ? AND couple_id = ?').bind(categoryId, auth.user.coupleId).first()
+          if (!category) return jsonResponse({ error: 'category_id が不正です。' }, 400)
+        }
+        if (cycleId !== null) {
+          const cycle = await env.DB.prepare('SELECT id FROM cycles WHERE id = ? AND couple_id = ?').bind(cycleId, auth.user.coupleId).first()
+          if (!cycle) return jsonResponse({ error: 'cycle_id が不正です。' }, 400)
         }
 
         await env.DB.prepare(`
@@ -1014,7 +1180,11 @@ export default {
 
         if (!VALID_SELF_TEST_TYPES.has(type)) return jsonResponse({ error: 'type は ovulation または pregnancy を指定してください。' }, 400)
         if (!VALID_SELF_TEST_RESULTS.has(result)) return jsonResponse({ error: 'result は negative / positive / pending を指定してください。' }, 400)
-        if (!testedAt) return jsonResponse({ error: 'tested_at は必須です。' }, 400)
+        if (!testedAt || !isValidDateTimeString(testedAt)) return jsonResponse({ error: 'tested_at の日時が不正です。' }, 400)
+        if (cycleId !== null) {
+          const cycle = await env.DB.prepare('SELECT id FROM cycles WHERE id = ? AND couple_id = ?').bind(cycleId, auth.user.coupleId).first()
+          if (!cycle) return jsonResponse({ error: 'cycle_id が不正です。' }, 400)
+        }
 
         const now = new Date().toISOString()
         const insertResult = await env.DB.prepare('INSERT INTO self_tests (couple_id, cycle_id, type, result, tested_at, memo, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -1035,12 +1205,18 @@ export default {
         const result = typeof payload.result === 'string' ? payload.result : existing.result
         const testedAt = typeof payload.tested_at === 'string' ? payload.tested_at : existing.tested_at
         const memo = typeof payload.memo === 'string' ? payload.memo : existing.memo
+        const cycleId = typeof payload.cycle_id === 'number' ? payload.cycle_id : payload.cycle_id === null ? null : existing.cycle_id
 
         if (!VALID_SELF_TEST_TYPES.has(type)) return jsonResponse({ error: 'type は ovulation または pregnancy を指定してください。' }, 400)
         if (!VALID_SELF_TEST_RESULTS.has(result)) return jsonResponse({ error: 'result は negative / positive / pending を指定してください。' }, 400)
+        if (!isValidDateTimeString(testedAt)) return jsonResponse({ error: 'tested_at の日時が不正です。' }, 400)
+        if (cycleId !== null) {
+          const cycle = await env.DB.prepare('SELECT id FROM cycles WHERE id = ? AND couple_id = ?').bind(cycleId, auth.user.coupleId).first()
+          if (!cycle) return jsonResponse({ error: 'cycle_id が不正です。' }, 400)
+        }
 
-        await env.DB.prepare('UPDATE self_tests SET type = ?, result = ?, tested_at = ?, memo = ?, updated_at = ? WHERE id = ?')
-          .bind(type, result, testedAt, memo || null, new Date().toISOString(), selfTestId)
+        await env.DB.prepare('UPDATE self_tests SET cycle_id = ?, type = ?, result = ?, tested_at = ?, memo = ?, updated_at = ? WHERE id = ?')
+          .bind(cycleId, type, result, testedAt, memo || null, new Date().toISOString(), selfTestId)
           .run()
 
         const updated = await env.DB.prepare('SELECT * FROM self_tests WHERE id = ?').bind(selfTestId).first()
