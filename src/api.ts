@@ -95,7 +95,17 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     },
   })
 
-  const body = await response.json() as T | ApiErrorBody
+  const responseText = await response.text()
+  let body: T | ApiErrorBody | null = null
+  try {
+    body = responseText ? JSON.parse(responseText) as T | ApiErrorBody : null
+  } catch {
+    if (!response.ok) {
+      throw new Error(`API request failed: ${response.status}`)
+    }
+    throw new Error('サーバーから不正な応答が返されました。')
+  }
+
   if (!response.ok) {
     const errorBody = body as ApiErrorBody
     const message = errorBody.error || `API request failed: ${response.status}`

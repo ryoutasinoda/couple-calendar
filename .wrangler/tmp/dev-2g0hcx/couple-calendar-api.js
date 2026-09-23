@@ -7870,7 +7870,7 @@ var derivePasswordBits = /* @__PURE__ */ __name(async (password, salt, iteration
 var hashPassword = /* @__PURE__ */ __name(async (password) => {
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);
-  const iterations = 12e4;
+  const iterations = 1e5;
   const derived = await derivePasswordBits(password, salt, iterations);
   return `pbkdf2-sha256$${iterations}$${bytesToBase64(salt)}$${bytesToBase64(derived)}`;
 }, "hashPassword");

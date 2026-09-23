@@ -22,6 +22,7 @@
 - パスワードをsalt付きPBKDF2で保存し、既存のSHA-256ハッシュはログイン成功時に自動移行
 - Push通知をUTC 00:00（Asia/Tokyo 09:00）のWorkers Cronへ接続し、前日通知・target別送信・重複防止・無効購読削除を実装
 - VAPID鍵の生成、Worker Secret登録、実機確認の手順を `docs/push-notification-setup.md` に整理
+- Cloudflare WorkersのPBKDF2上限に合わせて反復回数を100,000回へ修正し、本番登録APIを201 JSONで確認
 - `npm.cmd run build` 成功、ローカルVite + Workerで画面描画を確認
 
 ## 1. 調査結果の見方

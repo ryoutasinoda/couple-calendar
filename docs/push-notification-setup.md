@@ -2,6 +2,10 @@
 
 この手順は、Cloudflare WorkerのPush通知を本番で有効化するためのものです。秘密鍵はリポジトリ、チャット、ソースコードへ保存しません。
 
+## 重要: 認証エラーの修正履歴
+
+Cloudflare WorkersのWeb CryptoではPBKDF2の反復回数に上限があるため、パスワードハッシュの反復回数は100,000回で運用します。120,000回以上に変更すると、登録時にWorkerが例外終了します。
+
 ## 1. VAPID鍵を生成する
 
 プロジェクトルートで実行します。
@@ -41,7 +45,7 @@ Pages Functionsを同じデプロイフローで公開している場合は、�
 公開APIで公開鍵が返ることを確認します。
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing https://<公開URL>/api/push/public-key
+Invoke-WebRequest -UseBasicParsing https://couple-calendar-atu.pages.dev/api/push/public-key
 ```
 
 期待する応答は、`publicKey` が `null` ではないJSONです。秘密鍵が応答に含まれていないことも確認します。

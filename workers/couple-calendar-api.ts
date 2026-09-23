@@ -146,7 +146,7 @@ const derivePasswordBits = async (password: string, salt: Uint8Array, iterations
 const hashPassword = async (password: string) => {
   const salt = new Uint8Array(16)
   crypto.getRandomValues(salt)
-  const iterations = 120000
+  const iterations = 100000
   const derived = await derivePasswordBits(password, salt, iterations)
   return `pbkdf2-sha256$${iterations}$${bytesToBase64(salt)}$${bytesToBase64(derived)}`
 }
