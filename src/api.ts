@@ -1,4 +1,4 @@
-const API_BASE_URL = 'https://couple-calendar-api.couple-calendar-81806.workers.dev'
+const API_BASE_URL = ''
 
 type ApiErrorBody = {
   error?: string

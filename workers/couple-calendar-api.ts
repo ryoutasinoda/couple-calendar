@@ -6,8 +6,12 @@ type SessionUser = {
   coupleId: number | null
 }
 
+import webPush from 'web-push'
+
 type Env = {
   DB: any
+  VAPID_PUBLIC_KEY?: string
+  VAPID_PRIVATE_KEY?: string
 }
 
 const SESSION_COOKIE = 'session_id'
@@ -33,18 +37,50 @@ const VALID_SELF_TEST_RESULTS = new Set(['negative', 'positive', 'pending'])
 // 周期が自動終了せず放置されるのを防ぐための補助ルール（次の生理が来ないまま経過したら周期を区切る目安日数）
 const CYCLE_AUTO_CLOSE_DAYS = 60
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': 'https://couple-calendar-atu.pages.dev',
-  'Access-Control-Allow-Credentials': 'true',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+const ALLOWED_ORIGINS = new Set([
+  'https://couple-calendar-atu.pages.dev',
+])
+
+const PUSH_SUBSCRIPTIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    couple_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(endpoint)
+  )
+`
+
+const isAllowedOrigin = (origin: string | null) => {
+  if (!origin) return false
+  if (ALLOWED_ORIGINS.has(origin)) return true
+  return /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(?::\d+)?$/.test(origin)
+}
+
+let currentRequest: Request | null = null
+
+const getCorsHeaders = (request: Request | null = currentRequest) => {
+  const origin = request?.headers.get('Origin')
+  const allowedOrigin = origin && isAllowedOrigin(origin) ? origin : 'https://couple-calendar-atu.pages.dev'
+
+  return {
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+    'Vary': 'Origin',
+  }
 }
 
 const jsonResponse = (body: unknown, status = 200, headers?: HeadersInit) => new Response(JSON.stringify(body), {
   status,
   headers: {
     'Content-Type': 'application/json',
-    ...CORS_HEADERS,
+    ...getCorsHeaders(),
     ...(headers ?? {}),
   },
 })
@@ -82,16 +118,57 @@ const getCookieValue = (cookieHeader: string | null, name: string) => {
   return match ? decodeURIComponent(match.trim().slice(name.length + 1)) : null
 }
 
-const setSessionCookie = (response: Response, sessionId: string) => {
-  const cookie = `session_id=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
-  response.headers.append('Set-Cookie', cookie)
+const isLocalRequest = (request: Request) => {
+  const origin = request.headers.get('Origin') ?? ''
+  const host = request.headers.get('Host') ?? ''
+  return /localhost|127\.0\.0\.1/.test(origin) || /localhost|127\.0\.0\.1/.test(host)
+}
+
+const buildSessionCookie = (request: Request, sessionId: string, isClear = false) => {
+  const value = isClear ? '' : encodeURIComponent(sessionId)
+  const maxAge = isClear ? 0 : Math.floor(SESSION_TTL_MS / 1000)
+  const localRequest = isLocalRequest(request)
+  const securePart = localRequest ? '' : '; Secure'
+  return `session_id=${value}; Path=/; HttpOnly; SameSite=${localRequest ? 'Lax' : 'None'}${securePart}; Max-Age=${maxAge}`
+}
+
+const setSessionCookie = (response: Response, request: Request, sessionId: string) => {
+  response.headers.append('Set-Cookie', buildSessionCookie(request, sessionId))
   return response
 }
 
-const clearSessionCookie = (response: Response) => {
-  const cookie = 'session_id=; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=0'
-  response.headers.append('Set-Cookie', cookie)
+const clearSessionCookie = (response: Response, request: Request) => {
+  response.headers.append('Set-Cookie', buildSessionCookie(request, '', true))
   return response
+}
+
+const isPushEnabled = (env: Env) => Boolean(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY)
+
+const sendPushToCouple = async (env: Env, coupleId: number, title: string, body: string) => {
+  if (!isPushEnabled(env)) return
+  const rows = await env.DB.prepare('SELECT * FROM push_subscriptions WHERE couple_id = ?').bind(coupleId).all()
+  const payload = JSON.stringify({ title, body, tag: 'couple-calendar', data: { couple_id: coupleId } })
+  const sends = (rows.results ?? []).map(async (row: any) => {
+    try {
+      await webPush.sendNotification(
+        {
+          endpoint: row.endpoint,
+          keys: { p256dh: row.p256dh, auth: row.auth },
+        },
+        payload,
+        {
+          vapidDetails: {
+            subject: 'mailto:hello@couple-calendar.app',
+            publicKey: env.VAPID_PUBLIC_KEY!,
+            privateKey: env.VAPID_PRIVATE_KEY!,
+          },
+        },
+      )
+    } catch {
+      // Subscriptions may become invalid; they are silently removed on the next cleanup pass.
+    }
+  })
+  await Promise.allSettled(sends)
 }
 
 const ensureSchema = async (db: any) => {
@@ -181,6 +258,7 @@ const ensureSchema = async (db: any) => {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`,
+    PUSH_SUBSCRIPTIONS_TABLE,
   ]
 
   for (const statement of statements) {
@@ -286,20 +364,22 @@ const createDefaultCategories = async (db: any, coupleId: number) => {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    await ensureSchema(env.DB)
+    currentRequest = request
+    try {
+      await ensureSchema(env.DB)
 
-    const url = new URL(request.url)
-    const path = url.pathname
+      const url = new URL(request.url)
+      const path = url.pathname
 
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS })
-    }
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: getCorsHeaders(request) })
+      }
 
-    if (path === '/api/health') {
-      return jsonResponse({ ok: true, name: 'couple-calendar-api', time: new Date().toISOString() })
-    }
+      if (path === '/api/health') {
+        return jsonResponse({ ok: true, name: 'couple-calendar-api', time: new Date().toISOString() })
+      }
 
-    if (path === '/api/auth/register') {
+      if (path === '/api/auth/register') {
       if (request.method !== 'POST') {
         return jsonResponse({ error: 'POST を指定してください。' }, 405)
       }
@@ -330,7 +410,7 @@ export default {
         .run()
 
       const response = jsonResponse({ ok: true, user: { id: user.id, login_id: user.login_id, display_name: user.display_name } }, 201)
-      return setSessionCookie(response, sessionId)
+      return setSessionCookie(response, request, sessionId)
     }
 
     if (path === '/api/auth/login') {
@@ -362,12 +442,40 @@ export default {
         .run()
 
       const response = jsonResponse({ ok: true, user: { id: user.id, login_id: user.login_id, display_name: user.display_name } })
-      return setSessionCookie(response, sessionId)
+      return setSessionCookie(response, request, sessionId)
     }
 
     if (path === '/api/auth/logout') {
       const response = jsonResponse({ ok: true })
-      return clearSessionCookie(response)
+      return clearSessionCookie(response, request)
+    }
+
+    if (path === '/api/push/public-key') {
+      return jsonResponse({ ok: true, publicKey: env.VAPID_PUBLIC_KEY || null })
+    }
+
+    if (path === '/api/push/subscribe') {
+      const auth = await requireAuth(request, env.DB)
+      if (!auth.user) return auth.response as Response
+      if (!auth.user.coupleId) return jsonResponse({ error: '夫婦登録が必要です。' }, 400)
+
+      const payload = await readJsonBody(request)
+      const endpoint = typeof payload.endpoint === 'string' ? payload.endpoint : ''
+      const p256dh = typeof payload.p256dh === 'string' ? payload.p256dh : ''
+      const authKey = typeof payload.auth === 'string' ? payload.auth : ''
+
+      if (!endpoint || !p256dh || !authKey) {
+        return jsonResponse({ error: 'push subscription が不正です。' }, 400)
+      }
+
+      const now = new Date().toISOString()
+      await env.DB.prepare(`
+        INSERT INTO push_subscriptions (couple_id, user_id, endpoint, p256dh, auth, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, user_id = excluded.user_id, couple_id = excluded.couple_id, updated_at = excluded.updated_at
+      `).bind(auth.user.coupleId, auth.user.id, endpoint, p256dh, authKey, now, now).run()
+
+      return jsonResponse({ ok: true })
     }
 
     if (path === '/api/auth/me') {
@@ -774,6 +882,12 @@ export default {
         const startDate = typeof payload.start_date === 'string' ? payload.start_date : ''
         if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
 
+        const openPeriod = await env.DB.prepare('SELECT * FROM period_records WHERE couple_id = ? AND end_date IS NULL ORDER BY start_date DESC LIMIT 1')
+          .bind(auth.user.coupleId).first()
+        if (openPeriod) {
+          return jsonResponse({ error: '既に進行中の生理期間があります。' }, 409)
+        }
+
         const now = new Date().toISOString()
 
         // 前回の未終了の周期があれば、今回の生理開始日の前日で自動的に区切る
@@ -798,7 +912,6 @@ export default {
       }
 
       if (request.method === 'PUT' && periodId !== null) {
-        // 主に「終了を記録」用。start_date / end_date を後から編集する用途にも使う
         const existing = await env.DB.prepare('SELECT * FROM period_records WHERE id = ?').bind(periodId).first()
         if (!existing) return jsonResponse({ error: '記録が見つかりません。' }, 404)
         if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この記録は編集できません。' }, 403)
@@ -809,9 +922,20 @@ export default {
         if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
         if (endDate && !isValidDateString(endDate)) return jsonResponse({ error: 'end_date の形式が不正です。' }, 400)
 
+        const now = new Date().toISOString()
         await env.DB.prepare('UPDATE period_records SET start_date = ?, end_date = ?, updated_at = ? WHERE id = ?')
-          .bind(startDate, endDate || null, new Date().toISOString(), periodId)
+          .bind(startDate, endDate || null, now, periodId)
           .run()
+
+        const relatedCycle = await env.DB.prepare('SELECT * FROM cycles WHERE couple_id = ? AND period_record_id = ? ORDER BY start_date DESC LIMIT 1')
+          .bind(auth.user.coupleId, periodId)
+          .first()
+        if (relatedCycle) {
+          const nextEndDate = endDate || relatedCycle.end_date
+          await env.DB.prepare('UPDATE cycles SET start_date = ?, end_date = ?, updated_at = ? WHERE id = ?')
+            .bind(startDate, nextEndDate || null, now, relatedCycle.id)
+            .run()
+        }
 
         const updated = await env.DB.prepare('SELECT * FROM period_records WHERE id = ?').bind(periodId).first()
         return jsonResponse({ ok: true, period: updated })
@@ -923,16 +1047,19 @@ export default {
         return jsonResponse({ ok: true, self_test: updated })
       }
 
-      if (request.method === 'DELETE' && selfTestId !== null) {
-        const existing = await env.DB.prepare('SELECT * FROM self_tests WHERE id = ?').bind(selfTestId).first()
-        if (!existing) return jsonResponse({ error: '記録が見つかりません。' }, 404)
-        if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この記録は削除できません。' }, 403)
+        if (request.method === 'DELETE' && selfTestId !== null) {
+          const existing = await env.DB.prepare('SELECT * FROM self_tests WHERE id = ?').bind(selfTestId).first()
+          if (!existing) return jsonResponse({ error: '記録が見つかりません。' }, 404)
+          if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この記録は削除できません。' }, 403)
 
-        await env.DB.prepare('DELETE FROM self_tests WHERE id = ?').bind(selfTestId).run()
-        return jsonResponse({ ok: true, deleted_id: selfTestId })
+          await env.DB.prepare('DELETE FROM self_tests WHERE id = ?').bind(selfTestId).run()
+          return jsonResponse({ ok: true, deleted_id: selfTestId })
+        }
       }
-    }
 
-    return jsonResponse({ error: 'Not found' }, 404)
+      return jsonResponse({ error: 'Not found' }, 404)
+    } finally {
+      currentRequest = null
+    }
   },
 } as const

@@ -99,6 +99,32 @@ const iconOptions: { value: EventIcon; label: string; symbol: string }[] = [
 
 const fertilityIcons: EventIcon[] = ['hospital', 'period', 'ovulation', 'injection', 'checkup', 'test', 'pregnancy']
 
+const urlBase64ToUint8Array = (value: string) => {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4)
+  const normalized = (value + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const binary = atob(normalized)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return bytes
+}
+
+const formatJstDateKey = (date: Date) => {
+  const formatter = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+
+  const parts = formatter.formatToParts(date)
+  const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
+}
+
 const formatDateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 
 const getNthMondayOfMonth = (year: number, monthIndex: number, nth: number) => {
@@ -209,7 +235,7 @@ function App() {
   const [modalMode, setModalMode] = useState<'create' | 'view' | 'edit'>('create')
   const [editingEventId, setEditingEventId] = useState<number | null>(null)
   const [selectedDate, setSelectedDate] = useState('')
-  const [selectedDayForList, setSelectedDayForList] = useState(() => new Date().toISOString().slice(0, 10))
+  const [selectedDayForList, setSelectedDayForList] = useState(() => formatJstDateKey(new Date()))
   const [eventTitle, setEventTitle] = useState('')
   const [eventMember, setEventMember] = useState<Member>('me')
   const [isAllDay, setIsAllDay] = useState(true)
@@ -232,7 +258,7 @@ function App() {
   const [periods, setPeriods] = useState<PeriodRecord[]>([])
   const [cycles, setCycles] = useState<CycleRecord[]>([])
   const [selfTests, setSelfTests] = useState<SelfTestRecord[]>([])
-  const [selfTestDate, setSelfTestDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [selfTestDate, setSelfTestDate] = useState(() => formatJstDateKey(new Date()))
   const [selfTestType, setSelfTestType] = useState<'ovulation' | 'pregnancy'>('ovulation')
   const [selfTestResult, setSelfTestResult] = useState<'negative' | 'positive' | 'pending'>('negative')
   const [selfTestMemo, setSelfTestMemo] = useState('')
@@ -245,7 +271,7 @@ function App() {
 
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
-  const todayString = new Date().toLocaleDateString('sv-SE')
+  const todayString = formatJstDateKey(new Date())
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const firstDay = new Date(year, month, 1).getDay()
   const holidayMap = useMemo(() => buildHolidayMapForYear(year), [year])
@@ -309,6 +335,45 @@ function App() {
     }
   }
 
+  const subscribeToPushNotifications = async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setDataMessage('この端末では Push 通知を利用できません。')
+      return
+    }
+
+    try {
+      const registration = await navigator.serviceWorker.ready
+      const publicKeyResponse = await fetch('/api/push/public-key', { credentials: 'include' })
+      const publicKeyPayload = await publicKeyResponse.json() as { ok?: boolean; publicKey?: string | null }
+
+      if (!publicKeyPayload.ok || !publicKeyPayload.publicKey) {
+        setDataMessage('VAPID キーが未設定のため、通知を登録できません。')
+        return
+      }
+
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKeyPayload.publicKey),
+      })
+
+      const subscriptionData = subscription.toJSON()
+      await fetch('/api/push/subscribe', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          endpoint: subscriptionData.endpoint,
+          p256dh: subscriptionData.keys?.p256dh,
+          auth: subscriptionData.keys?.auth,
+        }),
+      })
+
+      setDataMessage('通知を有効にしました。予定の前日通知を使えるように準備しています。')
+    } catch (caughtError) {
+      setDataMessage(caughtError instanceof Error ? caughtError.message : '通知の設定に失敗しました。')
+    }
+  }
+
   const handleEnableNotifications = async () => {
     if (!('Notification' in window)) {
       setDataMessage('この端末では通知を利用できません。iOS ではホーム画面に追加後に通知設定をご確認ください。')
@@ -320,7 +385,7 @@ function App() {
       setNotificationPermission(permission)
       setNotificationPreference(permission === 'granted')
       if (permission === 'granted') {
-        setDataMessage('通知を有効にしました。予定の前日通知を使えるように準備しています。')
+        await subscribeToPushNotifications()
       } else {
         setDataMessage('通知は後で有効にできます。通知設定はブラウザの許可設定から変更できます。')
       }
@@ -607,7 +672,7 @@ function App() {
 
   const handleStartPeriod = async () => {
     try {
-      await startPeriod(new Date().toISOString().slice(0, 10))
+      await startPeriod(formatJstDateKey(new Date()))
       const [periodsResponse, cyclesResponse, selfTestsResponse] = await Promise.all([
         getPeriods(),
         getCycles(),
@@ -625,7 +690,7 @@ function App() {
   const handleEndPeriod = async () => {
     if (!activePeriod) return
     try {
-      await endPeriod(activePeriod.id, new Date().toISOString().slice(0, 10))
+      await endPeriod(activePeriod.id, formatJstDateKey(new Date()))
       const [periodsResponse, cyclesResponse, selfTestsResponse] = await Promise.all([
         getPeriods(),
         getCycles(),
