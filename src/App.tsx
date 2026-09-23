@@ -83,18 +83,18 @@ const memberOptions: { value: Member; label: string }[] = [
 const getMemberLabel = (member: Member) => memberOptions.find((option) => option.value === member)?.label ?? '自分'
 
 const iconOptions: { value: EventIcon; label: string; symbol: string }[] = [
-  { value: 'calendar', label: '予定', symbol: '▦' },
-  { value: 'hospital', label: '病院', symbol: '✚' },
-  { value: 'heart', label: 'デート', symbol: '♡' },
-  { value: 'work', label: '仕事', symbol: '▤' },
-  { value: 'shopping', label: '買い物', symbol: '🛍' },
-  { value: 'other', label: 'その他', symbol: '✦' },
-  { value: 'period', label: '生理', symbol: '◌' },
-  { value: 'ovulation', label: '排卵', symbol: '◎' },
-  { value: 'injection', label: '注射', symbol: '✦' },
-  { value: 'checkup', label: '検査', symbol: '✓' },
-  { value: 'test', label: 'テスト', symbol: '○' },
-  { value: 'pregnancy', label: '妊娠確認', symbol: '❤' },
+  { value: 'calendar', label: '予定', symbol: '🗓️' },
+  { value: 'hospital', label: '病院', symbol: '🏥' },
+  { value: 'heart', label: 'デート', symbol: '💗' },
+  { value: 'work', label: '仕事', symbol: '💼' },
+  { value: 'shopping', label: '買い物', symbol: '🛍️' },
+  { value: 'other', label: 'その他', symbol: '✨' },
+  { value: 'period', label: '生理', symbol: '🌙' },
+  { value: 'ovulation', label: '排卵', symbol: '🌼' },
+  { value: 'injection', label: '注射', symbol: '💉' },
+  { value: 'checkup', label: '検査', symbol: '🩺' },
+  { value: 'test', label: 'テスト', symbol: '🧪' },
+  { value: 'pregnancy', label: '妊娠確認', symbol: '🍼' },
 ]
 
 const fertilityIcons: EventIcon[] = ['hospital', 'period', 'ovulation', 'injection', 'checkup', 'test', 'pregnancy']
@@ -349,7 +349,9 @@ function App() {
         const response = await getCategories()
         setCategories(response.categories)
       } catch (caughtError) {
-        setDataMessage(caughtError instanceof Error ? caughtError.message : 'カテゴリを取得できませんでした。')
+        if (!(caughtError instanceof Error && caughtError.message === 'Not found')) {
+          setDataMessage(caughtError instanceof Error ? caughtError.message : 'カテゴリを取得できませんでした。')
+        }
       }
     }
 
@@ -370,7 +372,9 @@ function App() {
         setCycles(cyclesResponse.cycles)
         setSelfTests(selfTestsResponse.self_tests)
       } catch (caughtError) {
-        setDataMessage(caughtError instanceof Error ? caughtError.message : '生理・治療記録を取得できませんでした。')
+        if (!(caughtError instanceof Error && caughtError.message === 'Not found')) {
+          setDataMessage(caughtError instanceof Error ? caughtError.message : '生理・治療記録を取得できませんでした。')
+        }
       }
     }
 
@@ -1084,7 +1088,7 @@ function App() {
             {modalMode === 'view' && currentEvent ? (
               <div className="view-panel">
                 <div className="view-summary">
-                  <span className="view-icon">{iconOptions.find((option) => option.value === currentEvent.icon)?.symbol ?? '▦'}</span>
+                  <span className="view-icon">{iconOptions.find((option) => option.value === currentEvent.icon)?.symbol ?? iconOptions[0].symbol}</span>
                   <div>
                     <h3>{currentEvent.title}</h3>
                     <p>{getMemberLabel(currentEvent.member)}の予定</p>

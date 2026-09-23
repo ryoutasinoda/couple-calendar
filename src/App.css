@@ -52,7 +52,7 @@ button { cursor: pointer; }
 .event.me { background: #e8f0ff; color: #466cae; }
 .event.wife { background: #ffeaf0; color: #aa5c76; }
 .event.both { background: #f1ebff; color: #6657a6; }
-.event-icon { flex: 0 0 auto; font-size: 13px; }
+.event-icon { flex: 0 0 auto; font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif; font-size: 13px; }
 .event-title { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; line-height: 1.3; max-height: 2.6em; word-break: break-word; }
 .event-overflow { display: block; padding: 2px 4px; color: #8d8d9b; font-size: 10px; font-weight: 700; }
 .day-category-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
@@ -69,7 +69,7 @@ button { cursor: pointer; }
 .event-list-item.me { border-left: 4px solid #82a5ed; }
 .event-list-item.wife { border-left: 4px solid #e99bb4; }
 .event-list-item.both { border-left: 4px solid #bca9f5; }
-.event-list-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px; border-radius: 9px; background: #f5f5fa; font-size: 17px; }
+.event-list-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px; border-radius: 9px; background: #f5f5fa; font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif; font-size: 17px; }
 .event-list-content { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-width: 0; }
 .event-list-content strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .event-list-content small { overflow: hidden; color: #858592; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
@@ -81,7 +81,7 @@ button { cursor: pointer; }
 .day-detail-list { display: grid; gap: 10px; margin-top: 14px; }
 .day-detail-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 14px; border: 1px solid #ececf3; border-radius: 12px; background: rgba(255,255,255,.9); text-align: left; transition: border-color .15s, box-shadow .15s; }
 .day-detail-item:hover { border-color: #d6d4eb; box-shadow: 0 5px 15px rgba(40,40,65,.06); }
-.day-detail-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; background: #f5f5fa; font-size: 16px; }
+.day-detail-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; background: #f5f5fa; font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif; font-size: 16px; }
 .day-detail-copy { display: flex; flex-direction: column; gap: 4px; }
 .day-detail-copy strong { font-size: 13px; }
 .day-detail-copy small { color: #838390; font-size: 11px; }
@@ -443,7 +443,7 @@ button { cursor: pointer; }
 .form-grid .form-group:last-child { margin-bottom: 0; }
 .view-panel { display: flex; flex-direction: column; gap: 20px; }
 .view-summary { display: flex; align-items: center; gap: 14px; padding: 16px 18px; border: 1px solid #f0d9e2; border-radius: 16px; background: linear-gradient(135deg, #fff6f8, #f5f7ff); box-shadow: inset 0 0 0 1px rgba(255,255,255,.8); }
-.view-icon { display: inline-flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 14px; background: #ffe8f1; color: #b45d7d; font-size: 24px; box-shadow: inset 0 0 0 1px rgba(180,93,125,.08); }
+.view-icon { display: inline-flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 14px; background: #ffe8f1; color: #b45d7d; font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif; font-size: 24px; box-shadow: inset 0 0 0 1px rgba(180,93,125,.08); }
 .view-summary h3 { margin: 0; font-size: 22px; letter-spacing: -.03em; color: #303039; }
 .view-summary p { margin: 5px 0 0; color: #7a7a87; font-size: 12px; }
 .detail-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; }
