@@ -31,8 +31,6 @@ type Event = {
   source?: 'local' | 'api'
 }
 
-const STORAGE_KEY = 'couple-calendar-events'
-
 const memberOptions: { value: Member; label: string }[] = [
   { value: 'me', label: '自分' },
   { value: 'wife', label: '妻' },
@@ -57,31 +55,6 @@ const iconOptions: { value: EventIcon; label: string; symbol: string }[] = [
 ]
 
 const fertilityIcons: EventIcon[] = ['hospital', 'period', 'ovulation', 'injection', 'checkup', 'test', 'pregnancy']
-
-const initialEvents: Event[] = [
-  {
-    id: 1,
-    title: 'デート',
-    date: '2026-09-14',
-    member: 'me',
-    isAllDay: true,
-    startTime: '',
-    endTime: '',
-    memo: '',
-    icon: 'heart',
-  },
-  {
-    id: 2,
-    title: '病院',
-    date: '2026-09-17',
-    member: 'wife',
-    isAllDay: true,
-    startTime: '',
-    endTime: '',
-    memo: '',
-    icon: 'hospital',
-  },
-]
 
 const formatDateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 
@@ -142,29 +115,6 @@ const buildHolidayMapForYear = (year: number): Record<string, string> => {
   return map
 }
 
-function normalizeEvents(value: unknown): Event[] {
-  if (!Array.isArray(value)) return initialEvents
-
-  const normalizeMember = (member: unknown): Member => {
-    if (member === 'wife') return 'wife'
-    if (member === 'both') return 'both'
-    return 'me'
-  }
-
-  return value.map((event, index) => ({
-    id: typeof event.id === 'number' ? event.id : Date.now() + index,
-    title: typeof event.title === 'string' ? event.title : '予定',
-    date: typeof event.date === 'string' ? event.date : '',
-    member: normalizeMember(event.member),
-    isAllDay: typeof event.isAllDay === 'boolean' ? event.isAllDay : true,
-    startTime: typeof event.startTime === 'string' ? event.startTime : '',
-    endTime: typeof event.endTime === 'string' ? event.endTime : '',
-    memo: typeof event.memo === 'string' ? event.memo : '',
-    icon: iconOptions.some((option) => option.value === event.icon) ? event.icon : 'calendar',
-    source: 'local',
-  }))
-}
-
 const apiEventToLocalEvent = (event: ApiEvent): Event => ({
   id: event.id,
   title: event.title,
@@ -193,20 +143,7 @@ function App() {
   const [authUser, setAuthUser] = useState<ApiUser | null>(null)
   const [authChecked, setAuthChecked] = useState(false)
   const [currentDate, setCurrentDate] = useState(new Date())
-  const [events, setEvents] = useState<Event[]>(() => {
-    const savedEvents = localStorage.getItem(STORAGE_KEY)
-    if (!savedEvents) return initialEvents
-
-    try {
-      return normalizeEvents(JSON.parse(savedEvents))
-    } catch {
-      return initialEvents
-    }
-  })
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(events))
-  }, [events])
+  const [events, setEvents] = useState<Event[]>([])
 
   useEffect(() => {
     getCurrentUser()
@@ -249,12 +186,7 @@ function App() {
     const to = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`
     getApiEvents(from, to)
       .then(({ events: apiEvents }) => {
-        if (apiEvents.length > 0) {
-          const legacyEvents = localStorage.getItem(STORAGE_KEY)
-          const backupKey = `${STORAGE_KEY}-legacy-backup`
-          if (legacyEvents && !localStorage.getItem(backupKey)) localStorage.setItem(backupKey, legacyEvents)
-          setEvents(apiEvents.map(apiEventToLocalEvent))
-        }
+        setEvents(apiEvents.map(apiEventToLocalEvent))
       })
       .catch(() => setDataMessage('Worker APIから予定を取得できませんでした。'))
   }, [authUser, year, month, daysInMonth])
