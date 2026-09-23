@@ -28,6 +28,10 @@ const VALID_ICONS = new Set([
   'test',
   'pregnancy',
 ])
+const VALID_SELF_TEST_TYPES = new Set(['ovulation', 'pregnancy'])
+const VALID_SELF_TEST_RESULTS = new Set(['negative', 'positive', 'pending'])
+// 周期が自動終了せず放置されるのを防ぐための補助ルール（次の生理が来ないまま経過したら周期を区切る目安日数）
+const CYCLE_AUTO_CLOSE_DAYS = 60
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': 'https://couple-calendar-atu.pages.dev',
@@ -136,10 +140,68 @@ const ensureSchema = async (db: any) => {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      couple_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      icon TEXT NOT NULL,
+      color TEXT NOT NULL,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS period_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      couple_id INTEGER NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS cycles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      couple_id INTEGER NOT NULL,
+      period_record_id INTEGER,
+      start_date TEXT NOT NULL,
+      end_date TEXT,
+      treatment_type TEXT,
+      result TEXT,
+      is_manual_override INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS self_tests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      couple_id INTEGER NOT NULL,
+      cycle_id INTEGER,
+      type TEXT NOT NULL CHECK(type IN ('ovulation', 'pregnancy')),
+      result TEXT NOT NULL CHECK(result IN ('negative', 'positive', 'pending')),
+      tested_at TEXT NOT NULL,
+      memo TEXT,
+      created_by INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
   ]
 
   for (const statement of statements) {
     await db.prepare(statement).run()
+  }
+
+  // 既存DBへのカラム追加（D1はIF NOT EXISTSに未対応なので、二重追加エラーは無視する）
+  const alterStatements = [
+    'ALTER TABLE events ADD COLUMN category_id INTEGER',
+    'ALTER TABLE events ADD COLUMN cycle_id INTEGER',
+    'ALTER TABLE events ADD COLUMN amount INTEGER',
+    'ALTER TABLE events ADD COLUMN shared INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE events ADD COLUMN notify_before_day INTEGER NOT NULL DEFAULT 0',
+  ]
+  for (const statement of alterStatements) {
+    try {
+      await db.prepare(statement).run()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes('duplicate column')) throw error
+    }
   }
 }
 
@@ -197,6 +259,29 @@ const generateInviteCode = () => {
     code += chars[Math.floor(Math.random() * chars.length)]
   }
   return code
+}
+
+const DEFAULT_CATEGORIES = [
+  { name: '予定', icon: 'calendar', color: '#8a8a99' },
+  { name: 'デート', icon: 'heart', color: '#e29aa8' },
+  { name: '仕事', icon: 'work', color: '#7c93c2' },
+  { name: '買い物', icon: 'shopping', color: '#c2a37c' },
+  { name: '診察', icon: 'hospital', color: '#6fb1a0' },
+  { name: '注射(通院)', icon: 'injection', color: '#9a8fd1' },
+  { name: '自己注射', icon: 'injection', color: '#b58fd1' },
+  { name: '服薬', icon: 'checkup', color: '#8fb0d1' },
+  { name: '移植', icon: 'checkup', color: '#d18f9f' },
+  { name: '生理', icon: 'period', color: '#c98fa8' },
+  { name: 'その他', icon: 'other', color: '#a3a3ad' },
+]
+
+const createDefaultCategories = async (db: any, coupleId: number) => {
+  const now = new Date().toISOString()
+  for (const category of DEFAULT_CATEGORIES) {
+    await db.prepare('INSERT INTO categories (couple_id, name, icon, color, is_default, created_at) VALUES (?, ?, ?, ?, 1, ?)')
+      .bind(coupleId, category.name, category.icon, category.color, now)
+      .run()
+  }
 }
 
 export default {
@@ -328,6 +413,8 @@ export default {
         .bind(coupleResult.meta.last_row_id, auth.user.id, role, new Date().toISOString())
         .run()
 
+      await createDefaultCategories(env.DB, coupleResult.meta.last_row_id as number)
+
       return jsonResponse({
         ok: true,
         couple_id: coupleResult.meta.last_row_id,
@@ -439,8 +526,8 @@ export default {
 
         const from = url.searchParams.get('from') ?? ''
         const to = url.searchParams.get('to') ?? ''
-        const filters: string[] = []
-        const params: any[] = [auth.user.coupleId]
+        const filters: string[] = ['(shared = 1 OR created_by = ?)']
+        const params: any[] = [auth.user.coupleId, auth.user.id]
 
         if (from && isValidDateString(from)) {
           filters.push('start_date >= ?')
@@ -451,7 +538,7 @@ export default {
           params.push(to)
         }
 
-        const whereClause = filters.length ? `WHERE couple_id = ? AND ${filters.join(' AND ')}` : 'WHERE couple_id = ?'
+        const whereClause = `WHERE couple_id = ? AND ${filters.join(' AND ')}`
         const rows = await env.DB.prepare(`SELECT * FROM events ${whereClause} ORDER BY start_date ASC, start_time ASC, id ASC`).bind(...params).all()
         return jsonResponse({ ok: true, events: rows.results ?? [] })
       }
@@ -471,6 +558,11 @@ export default {
         const icon = typeof payload.icon === 'string' ? payload.icon : ''
         const location = typeof payload.location === 'string' ? payload.location : ''
         const memo = typeof payload.memo === 'string' ? payload.memo : ''
+        const categoryId = typeof payload.category_id === 'number' ? payload.category_id : null
+        const cycleId = typeof payload.cycle_id === 'number' ? payload.cycle_id : null
+        const amount = typeof payload.amount === 'number' ? payload.amount : null
+        const shared = typeof payload.shared === 'boolean' ? payload.shared : true
+        const notifyBeforeDay = Boolean(payload.notify_before_day)
 
         if (!title) return jsonResponse({ error: 'title は必須です。' }, 400)
         if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
@@ -488,8 +580,9 @@ export default {
         const result = await env.DB.prepare(`
           INSERT INTO events (
             couple_id, created_by, title, start_date, end_date, start_time, end_time,
-            is_all_day, target, icon, location, memo, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            is_all_day, target, icon, location, memo, category_id, cycle_id, amount,
+            shared, notify_before_day, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           auth.user.coupleId,
           auth.user.id,
@@ -503,6 +596,11 @@ export default {
           icon,
           location || null,
           memo || null,
+          categoryId,
+          cycleId,
+          amount,
+          shared ? 1 : 0,
+          notifyBeforeDay ? 1 : 0,
           now,
           now,
         ).run()
@@ -518,6 +616,7 @@ export default {
         const eventRow = await env.DB.prepare('SELECT * FROM events WHERE id = ?').bind(eventId).first()
         if (!eventRow) return jsonResponse({ error: '予定が見つかりません。' }, 404)
         if (eventRow.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この夫婦の予定ではありません。' }, 403)
+        if (!eventRow.shared && eventRow.created_by !== auth.user.id) return jsonResponse({ error: 'この予定は共有されていません。' }, 403)
 
         return jsonResponse({ ok: true, event: eventRow })
       }
@@ -529,6 +628,7 @@ export default {
         const existing = await env.DB.prepare('SELECT * FROM events WHERE id = ?').bind(eventId).first()
         if (!existing) return jsonResponse({ error: '予定が見つかりません。' }, 404)
         if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この夫婦の予定ではありません。' }, 403)
+        if (!existing.shared && existing.created_by !== auth.user.id) return jsonResponse({ error: 'この予定は共有されていません。' }, 403)
 
         const payload = await readJsonBody(request)
         const title = typeof payload.title === 'string' ? payload.title.trim() : existing.title
@@ -541,6 +641,11 @@ export default {
         const location = typeof payload.location === 'string' ? payload.location : existing.location
         const memo = typeof payload.memo === 'string' ? payload.memo : existing.memo
         const isAllDay = typeof payload.is_all_day === 'boolean' ? payload.is_all_day : Boolean(existing.is_all_day)
+        const categoryId = typeof payload.category_id === 'number' ? payload.category_id : existing.category_id
+        const cycleId = typeof payload.cycle_id === 'number' ? payload.cycle_id : existing.cycle_id
+        const amount = typeof payload.amount === 'number' ? payload.amount : existing.amount
+        const shared = typeof payload.shared === 'boolean' ? payload.shared : Boolean(existing.shared)
+        const notifyBeforeDay = typeof payload.notify_before_day === 'boolean' ? payload.notify_before_day : Boolean(existing.notify_before_day)
 
         if (!title) return jsonResponse({ error: 'title は必須です。' }, 400)
         if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
@@ -557,7 +662,8 @@ export default {
         await env.DB.prepare(`
           UPDATE events SET
             title = ?, start_date = ?, end_date = ?, start_time = ?, end_time = ?,
-            is_all_day = ?, target = ?, icon = ?, location = ?, memo = ?, updated_at = ?
+            is_all_day = ?, target = ?, icon = ?, location = ?, memo = ?, category_id = ?,
+            cycle_id = ?, amount = ?, shared = ?, notify_before_day = ?, updated_at = ?
           WHERE id = ?
         `).bind(
           title,
@@ -570,6 +676,11 @@ export default {
           icon,
           location || null,
           memo || null,
+          categoryId,
+          cycleId,
+          amount,
+          shared ? 1 : 0,
+          notifyBeforeDay ? 1 : 0,
           new Date().toISOString(),
           eventId,
         ).run()
@@ -585,9 +696,240 @@ export default {
         const existing = await env.DB.prepare('SELECT * FROM events WHERE id = ?').bind(eventId).first()
         if (!existing) return jsonResponse({ error: '予定が見つかりません。' }, 404)
         if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この夫婦の予定ではありません。' }, 403)
+        if (!existing.shared && existing.created_by !== auth.user.id) return jsonResponse({ error: 'この予定は共有されていません。' }, 403)
 
         await env.DB.prepare('DELETE FROM events WHERE id = ?').bind(eventId).run()
         return jsonResponse({ ok: true, deleted_id: eventId })
+      }
+    }
+
+    // ---- カテゴリ ----
+    const categoryMatch = path.match(/^\/api\/categories(?:\/([0-9]+))?$/)
+    if (categoryMatch) {
+      const categoryId = categoryMatch[1] ? Number(categoryMatch[1]) : null
+      const auth = await requireAuth(request, env.DB)
+      if (!auth.user) return auth.response as Response
+
+      if (request.method === 'GET' && !categoryId) {
+        const rows = await env.DB.prepare('SELECT * FROM categories WHERE couple_id = ? ORDER BY is_default DESC, id ASC').bind(auth.user.coupleId).all()
+        return jsonResponse({ ok: true, categories: rows.results ?? [] })
+      }
+
+      if (request.method === 'POST' && !categoryId) {
+        const payload = await readJsonBody(request)
+        const name = typeof payload.name === 'string' ? payload.name.trim() : ''
+        const icon = typeof payload.icon === 'string' ? payload.icon.trim() : ''
+        const color = typeof payload.color === 'string' ? payload.color.trim() : ''
+        if (!name || !icon || !color) return jsonResponse({ error: 'name / icon / color は必須です。' }, 400)
+
+        const now = new Date().toISOString()
+        const result = await env.DB.prepare('INSERT INTO categories (couple_id, name, icon, color, is_default, created_at) VALUES (?, ?, ?, ?, 0, ?)')
+          .bind(auth.user.coupleId, name, icon, color, now)
+          .run()
+        const created = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(result.meta.last_row_id).first()
+        return jsonResponse({ ok: true, category: created }, 201)
+      }
+
+      if (request.method === 'PUT' && categoryId !== null) {
+        const existing = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(categoryId).first()
+        if (!existing) return jsonResponse({ error: 'カテゴリが見つかりません。' }, 404)
+        if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'このカテゴリは編集できません。' }, 403)
+
+        const payload = await readJsonBody(request)
+        const name = typeof payload.name === 'string' ? payload.name.trim() : existing.name
+        const icon = typeof payload.icon === 'string' ? payload.icon.trim() : existing.icon
+        const color = typeof payload.color === 'string' ? payload.color.trim() : existing.color
+        if (!name || !icon || !color) return jsonResponse({ error: 'name / icon / color は必須です。' }, 400)
+
+        await env.DB.prepare('UPDATE categories SET name = ?, icon = ?, color = ? WHERE id = ?').bind(name, icon, color, categoryId).run()
+        const updated = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(categoryId).first()
+        return jsonResponse({ ok: true, category: updated })
+      }
+
+      if (request.method === 'DELETE' && categoryId !== null) {
+        const existing = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(categoryId).first()
+        if (!existing) return jsonResponse({ error: 'カテゴリが見つかりません。' }, 404)
+        if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'このカテゴリは削除できません。' }, 403)
+        if (existing.is_default) return jsonResponse({ error: '初期カテゴリは削除できません。' }, 400)
+
+        await env.DB.prepare('DELETE FROM categories WHERE id = ?').bind(categoryId).run()
+        return jsonResponse({ ok: true, deleted_id: categoryId })
+      }
+    }
+
+    // ---- 生理期間 ----
+    const periodMatch = path.match(/^\/api\/periods(?:\/([0-9]+))?$/)
+    if (periodMatch) {
+      const periodId = periodMatch[1] ? Number(periodMatch[1]) : null
+      const auth = await requireAuth(request, env.DB)
+      if (!auth.user) return auth.response as Response
+
+      if (request.method === 'GET' && !periodId) {
+        const rows = await env.DB.prepare('SELECT * FROM period_records WHERE couple_id = ? ORDER BY start_date DESC').bind(auth.user.coupleId).all()
+        return jsonResponse({ ok: true, periods: rows.results ?? [] })
+      }
+
+      if (request.method === 'POST' && !periodId) {
+        const payload = await readJsonBody(request)
+        const startDate = typeof payload.start_date === 'string' ? payload.start_date : ''
+        if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
+
+        const now = new Date().toISOString()
+
+        // 前回の未終了の周期があれば、今回の生理開始日の前日で自動的に区切る
+        const openCycle = await env.DB.prepare('SELECT * FROM cycles WHERE couple_id = ? AND end_date IS NULL ORDER BY start_date DESC LIMIT 1')
+          .bind(auth.user.coupleId).first()
+        if (openCycle) {
+          const previousDay = new Date(new Date(startDate).getTime() - 86400000).toISOString().slice(0, 10)
+          await env.DB.prepare('UPDATE cycles SET end_date = ?, updated_at = ? WHERE id = ?').bind(previousDay, now, openCycle.id).run()
+        }
+
+        const periodResult = await env.DB.prepare('INSERT INTO period_records (couple_id, start_date, end_date, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)')
+          .bind(auth.user.coupleId, startDate, now, now)
+          .run()
+
+        // 生理開始日を起点に新しい周期を自動生成
+        await env.DB.prepare('INSERT INTO cycles (couple_id, period_record_id, start_date, end_date, treatment_type, result, is_manual_override, created_at, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, 0, ?, ?)')
+          .bind(auth.user.coupleId, periodResult.meta.last_row_id, startDate, now, now)
+          .run()
+
+        const created = await env.DB.prepare('SELECT * FROM period_records WHERE id = ?').bind(periodResult.meta.last_row_id).first()
+        return jsonResponse({ ok: true, period: created }, 201)
+      }
+
+      if (request.method === 'PUT' && periodId !== null) {
+        // 主に「終了を記録」用。start_date / end_date を後から編集する用途にも使う
+        const existing = await env.DB.prepare('SELECT * FROM period_records WHERE id = ?').bind(periodId).first()
+        if (!existing) return jsonResponse({ error: '記録が見つかりません。' }, 404)
+        if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この記録は編集できません。' }, 403)
+
+        const payload = await readJsonBody(request)
+        const startDate = typeof payload.start_date === 'string' ? payload.start_date : existing.start_date
+        const endDate = typeof payload.end_date === 'string' ? payload.end_date : existing.end_date
+        if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
+        if (endDate && !isValidDateString(endDate)) return jsonResponse({ error: 'end_date の形式が不正です。' }, 400)
+
+        await env.DB.prepare('UPDATE period_records SET start_date = ?, end_date = ?, updated_at = ? WHERE id = ?')
+          .bind(startDate, endDate || null, new Date().toISOString(), periodId)
+          .run()
+
+        const updated = await env.DB.prepare('SELECT * FROM period_records WHERE id = ?').bind(periodId).first()
+        return jsonResponse({ ok: true, period: updated })
+      }
+    }
+
+    // ---- 治療周期 ----
+    const cycleMatch = path.match(/^\/api\/cycles(?:\/([0-9]+))?$/)
+    if (cycleMatch) {
+      const cycleId = cycleMatch[1] ? Number(cycleMatch[1]) : null
+      const auth = await requireAuth(request, env.DB)
+      if (!auth.user) return auth.response as Response
+
+      if (request.method === 'GET' && !cycleId) {
+        // 妊娠判定待ちなどで生理が来ず放置された周期は、経過日数で自動終了させる（補助ルール）
+        const staleThreshold = new Date(Date.now() - CYCLE_AUTO_CLOSE_DAYS * 86400000).toISOString().slice(0, 10)
+        await env.DB.prepare('UPDATE cycles SET end_date = start_date, updated_at = ? WHERE couple_id = ? AND end_date IS NULL AND start_date <= ?')
+          .bind(new Date().toISOString(), auth.user.coupleId, staleThreshold)
+          .run()
+
+        const rows = await env.DB.prepare('SELECT * FROM cycles WHERE couple_id = ? ORDER BY start_date DESC').bind(auth.user.coupleId).all()
+        const cycles = await Promise.all((rows.results ?? []).map(async (cycle: any) => {
+          const eventCount = await env.DB.prepare('SELECT COUNT(*) as count FROM events WHERE cycle_id = ?').bind(cycle.id).first()
+          const testCount = await env.DB.prepare('SELECT COUNT(*) as count FROM self_tests WHERE cycle_id = ?').bind(cycle.id).first()
+          return { ...cycle, event_count: eventCount?.count ?? 0, self_test_count: testCount?.count ?? 0 }
+        }))
+        return jsonResponse({ ok: true, cycles })
+      }
+
+      if (request.method === 'PUT' && cycleId !== null) {
+        const existing = await env.DB.prepare('SELECT * FROM cycles WHERE id = ?').bind(cycleId).first()
+        if (!existing) return jsonResponse({ error: '周期が見つかりません。' }, 404)
+        if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この周期は編集できません。' }, 403)
+
+        const payload = await readJsonBody(request)
+        const startDate = typeof payload.start_date === 'string' ? payload.start_date : existing.start_date
+        const endDate = typeof payload.end_date === 'string' ? payload.end_date : existing.end_date
+        const treatmentType = typeof payload.treatment_type === 'string' ? payload.treatment_type : existing.treatment_type
+        const result = typeof payload.result === 'string' ? payload.result : existing.result
+        // 境界の手動編集（分割・統合の補正）が行われたことを記録する
+        const manualOverride = (typeof payload.start_date === 'string' || typeof payload.end_date === 'string')
+          ? 1
+          : (existing.is_manual_override ? 1 : 0)
+
+        if (!isValidDateString(startDate)) return jsonResponse({ error: 'start_date の形式が不正です。' }, 400)
+        if (endDate && !isValidDateString(endDate)) return jsonResponse({ error: 'end_date の形式が不正です。' }, 400)
+
+        await env.DB.prepare('UPDATE cycles SET start_date = ?, end_date = ?, treatment_type = ?, result = ?, is_manual_override = ?, updated_at = ? WHERE id = ?')
+          .bind(startDate, endDate || null, treatmentType || null, result || null, manualOverride, new Date().toISOString(), cycleId)
+          .run()
+
+        const updated = await env.DB.prepare('SELECT * FROM cycles WHERE id = ?').bind(cycleId).first()
+        return jsonResponse({ ok: true, cycle: updated })
+      }
+    }
+
+    // ---- 自己検査 ----
+    const selfTestMatch = path.match(/^\/api\/self-tests(?:\/([0-9]+))?$/)
+    if (selfTestMatch) {
+      const selfTestId = selfTestMatch[1] ? Number(selfTestMatch[1]) : null
+      const auth = await requireAuth(request, env.DB)
+      if (!auth.user) return auth.response as Response
+
+      if (request.method === 'GET' && !selfTestId) {
+        const rows = await env.DB.prepare('SELECT * FROM self_tests WHERE couple_id = ? ORDER BY tested_at DESC').bind(auth.user.coupleId).all()
+        return jsonResponse({ ok: true, self_tests: rows.results ?? [] })
+      }
+
+      if (request.method === 'POST' && !selfTestId) {
+        const payload = await readJsonBody(request)
+        const type = typeof payload.type === 'string' ? payload.type : ''
+        const result = typeof payload.result === 'string' ? payload.result : ''
+        const testedAt = typeof payload.tested_at === 'string' ? payload.tested_at : ''
+        const memo = typeof payload.memo === 'string' ? payload.memo : ''
+        const cycleId = typeof payload.cycle_id === 'number' ? payload.cycle_id : null
+
+        if (!VALID_SELF_TEST_TYPES.has(type)) return jsonResponse({ error: 'type は ovulation または pregnancy を指定してください。' }, 400)
+        if (!VALID_SELF_TEST_RESULTS.has(result)) return jsonResponse({ error: 'result は negative / positive / pending を指定してください。' }, 400)
+        if (!testedAt) return jsonResponse({ error: 'tested_at は必須です。' }, 400)
+
+        const now = new Date().toISOString()
+        const insertResult = await env.DB.prepare('INSERT INTO self_tests (couple_id, cycle_id, type, result, tested_at, memo, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(auth.user.coupleId, cycleId, type, result, testedAt, memo || null, auth.user.id, now, now)
+          .run()
+
+        const created = await env.DB.prepare('SELECT * FROM self_tests WHERE id = ?').bind(insertResult.meta.last_row_id).first()
+        return jsonResponse({ ok: true, self_test: created }, 201)
+      }
+
+      if (request.method === 'PUT' && selfTestId !== null) {
+        const existing = await env.DB.prepare('SELECT * FROM self_tests WHERE id = ?').bind(selfTestId).first()
+        if (!existing) return jsonResponse({ error: '記録が見つかりません。' }, 404)
+        if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この記録は編集できません。' }, 403)
+
+        const payload = await readJsonBody(request)
+        const type = typeof payload.type === 'string' ? payload.type : existing.type
+        const result = typeof payload.result === 'string' ? payload.result : existing.result
+        const testedAt = typeof payload.tested_at === 'string' ? payload.tested_at : existing.tested_at
+        const memo = typeof payload.memo === 'string' ? payload.memo : existing.memo
+
+        if (!VALID_SELF_TEST_TYPES.has(type)) return jsonResponse({ error: 'type は ovulation または pregnancy を指定してください。' }, 400)
+        if (!VALID_SELF_TEST_RESULTS.has(result)) return jsonResponse({ error: 'result は negative / positive / pending を指定してください。' }, 400)
+
+        await env.DB.prepare('UPDATE self_tests SET type = ?, result = ?, tested_at = ?, memo = ?, updated_at = ? WHERE id = ?')
+          .bind(type, result, testedAt, memo || null, new Date().toISOString(), selfTestId)
+          .run()
+
+        const updated = await env.DB.prepare('SELECT * FROM self_tests WHERE id = ?').bind(selfTestId).first()
+        return jsonResponse({ ok: true, self_test: updated })
+      }
+
+      if (request.method === 'DELETE' && selfTestId !== null) {
+        const existing = await env.DB.prepare('SELECT * FROM self_tests WHERE id = ?').bind(selfTestId).first()
+        if (!existing) return jsonResponse({ error: '記録が見つかりません。' }, 404)
+        if (existing.couple_id !== auth.user.coupleId) return jsonResponse({ error: 'この記録は削除できません。' }, 403)
+
+        await env.DB.prepare('DELETE FROM self_tests WHERE id = ?').bind(selfTestId).run()
+        return jsonResponse({ ok: true, deleted_id: selfTestId })
       }
     }
 

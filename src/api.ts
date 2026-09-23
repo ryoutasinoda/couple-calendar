@@ -1,6 +1,4 @@
-const API_BASE_URL = import.meta.env.DEV
-  ? 'https://couple-calendar-api.couple-calendar-81806.workers.dev'
-  : ''
+const API_BASE_URL = 'https://couple-calendar-api.couple-calendar-81806.workers.dev'
 
 type ApiErrorBody = {
   error?: string
@@ -28,6 +26,61 @@ export type ApiEvent = {
   icon: string
   location: string | null
   memo: string | null
+  category_id: number | null
+  cycle_id: number | null
+  amount: number | null
+  shared: number
+  notify_before_day: number
+  created_at: string
+  updated_at: string
+}
+
+export type ApiCategory = {
+  id: number
+  couple_id: number
+  name: string
+  icon: string
+  color: string
+  is_default: number
+  created_at: string
+}
+
+export type ApiPeriodRecord = {
+  id: number
+  couple_id: number
+  start_date: string
+  end_date: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type ApiCycle = {
+  id: number
+  couple_id: number
+  period_record_id: number | null
+  start_date: string
+  end_date: string | null
+  treatment_type: string | null
+  result: '陽性' | '陰性' | null
+  is_manual_override: number
+  event_count: number
+  self_test_count: number
+  created_at: string
+  updated_at: string
+}
+
+export type SelfTestType = 'ovulation' | 'pregnancy'
+export type SelfTestResult = 'negative' | 'positive' | 'pending'
+
+export type ApiSelfTest = {
+  id: number
+  couple_id: number
+  cycle_id: number | null
+  type: SelfTestType
+  result: SelfTestResult
+  tested_at: string
+  memo: string | null
+  created_by: number
   created_at: string
   updated_at: string
 }
@@ -104,5 +157,79 @@ export const updateEvent = (id: number, event: Record<string, unknown>) =>
 
 export const deleteEvent = (id: number) =>
   request<{ ok: true; deleted_id: number }>(`/api/events/${id}`, {
+    method: 'DELETE',
+  })
+
+// ---- カテゴリ ----
+
+export const getCategories = () =>
+  request<{ ok: true; categories: ApiCategory[] }>('/api/categories')
+
+export const createCategory = (category: { name: string; icon: string; color: string }) =>
+  request<{ ok: true; category: ApiCategory }>('/api/categories', {
+    method: 'POST',
+    body: JSON.stringify(category),
+  })
+
+export const updateCategory = (id: number, category: Partial<{ name: string; icon: string; color: string }>) =>
+  request<{ ok: true; category: ApiCategory }>(`/api/categories/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(category),
+  })
+
+export const deleteCategory = (id: number) =>
+  request<{ ok: true; deleted_id: number }>(`/api/categories/${id}`, {
+    method: 'DELETE',
+  })
+
+// ---- 生理期間 ----
+
+export const getPeriods = () =>
+  request<{ ok: true; periods: ApiPeriodRecord[] }>('/api/periods')
+
+export const startPeriod = (startDate: string) =>
+  request<{ ok: true; period: ApiPeriodRecord }>('/api/periods', {
+    method: 'POST',
+    body: JSON.stringify({ start_date: startDate }),
+  })
+
+export const updatePeriod = (id: number, period: Partial<{ start_date: string; end_date: string }>) =>
+  request<{ ok: true; period: ApiPeriodRecord }>(`/api/periods/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(period),
+  })
+
+export const endPeriod = (id: number, endDate: string) => updatePeriod(id, { end_date: endDate })
+
+// ---- 治療周期 ----
+
+export const getCycles = () =>
+  request<{ ok: true; cycles: ApiCycle[] }>('/api/cycles')
+
+export const updateCycle = (id: number, cycle: Partial<{ start_date: string; end_date: string; treatment_type: string; result: string }>) =>
+  request<{ ok: true; cycle: ApiCycle }>(`/api/cycles/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(cycle),
+  })
+
+// ---- 自己検査 ----
+
+export const getSelfTests = () =>
+  request<{ ok: true; self_tests: ApiSelfTest[] }>('/api/self-tests')
+
+export const createSelfTest = (selfTest: { type: SelfTestType; result: SelfTestResult; tested_at: string; memo?: string; cycle_id?: number }) =>
+  request<{ ok: true; self_test: ApiSelfTest }>('/api/self-tests', {
+    method: 'POST',
+    body: JSON.stringify(selfTest),
+  })
+
+export const updateSelfTest = (id: number, selfTest: Partial<{ type: SelfTestType; result: SelfTestResult; tested_at: string; memo: string }>) =>
+  request<{ ok: true; self_test: ApiSelfTest }>(`/api/self-tests/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(selfTest),
+  })
+
+export const deleteSelfTest = (id: number) =>
+  request<{ ok: true; deleted_id: number }>(`/api/self-tests/${id}`, {
     method: 'DELETE',
   })
